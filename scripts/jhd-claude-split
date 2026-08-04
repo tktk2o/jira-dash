@@ -26,7 +26,11 @@ set -euo pipefail
 
 readonly MARKER='@jhd-claude'
 readonly MAX_PANES=2
-readonly FIRST_PANE_HEIGHT=15
+# Rows for the pane. Claude Code's own composer plus its status line take a
+# handful of rows before any output shows, so a short pane scrolls the reply out
+# of view immediately. jira-dash gives up rows more cheaply: it loses table rows
+# but no columns, and its own chrome is 5 rows.
+readonly FIRST_PANE_HEIGHT=24
 
 die() {
 	# display-message as well as stderr: jira-dash hands the command the
