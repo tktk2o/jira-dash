@@ -6,8 +6,13 @@ import (
 )
 
 // IssueVars is the whole contract for a user-defined keybinding. It is a flat
-// struct of strings so a config author can see exactly what is available, and
-// so a typo fails loudly instead of expanding to nothing.
+// struct of strings so a config author can see exactly what is available.
+//
+// Every value is already shell-quoted. The rendered command is handed to
+// `sh -c`, and Summary is a Jira issue title - free text written by whoever
+// filed the issue. Substituting it raw would let a title like `; rm -rf ~` run
+// commands on this machine, so quoting happens here rather than being left to
+// each config author to remember.
 type IssueVars struct {
 	IssueKey   string
 	IssueURL   string
@@ -19,20 +24,27 @@ type IssueVars struct {
 
 func NewIssueVars(i Issue) IssueVars {
 	return IssueVars{
-		IssueKey:   i.Key,
-		IssueURL:   i.URL,
-		Summary:    i.Summary,
-		Status:     i.Status,
-		Assignee:   i.AssigneeName(),
-		ProjectKey: i.Project.Key,
+		IssueKey:   shellQuote(i.Key),
+		IssueURL:   shellQuote(i.URL),
+		Summary:    shellQuote(i.Summary),
+		Status:     shellQuote(i.Status),
+		Assignee:   shellQuote(i.AssigneeName()),
+		ProjectKey: shellQuote(i.Project.Key),
 	}
 }
 
-// RenderCommand expands a configured command. Option "missingkey=error" is
-// deliberate: silently dropping an unknown variable would build a shell
-// command with a hole in it.
+// shellQuote wraps a value in single quotes, which suppresses every form of
+// shell interpretation, and closes/reopens the quoting around any single quote
+// in the value itself.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// RenderCommand expands a configured command. An unknown variable is an error:
+// text/template fails a struct field it cannot find, so a typo in a config
+// stops the keybinding instead of handing a shell a command with a hole in it.
 func RenderCommand(text string, v IssueVars) (string, error) {
-	tmpl, err := template.New("command").Option("missingkey=error").Parse(text)
+	tmpl, err := template.New("command").Parse(text)
 	if err != nil {
 		return "", err
 	}
