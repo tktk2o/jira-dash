@@ -8,18 +8,23 @@
 # Filters are raw JQL, so anything you can build in the Jira web UI can be
 # pasted here verbatim.
 
+# Always end a JQL with ORDER BY. Jira's implicit order groups by project, so
+# a section whose total exceeds its limit silently drops whole projects off the
+# bottom rather than the oldest issues - measured on a 63-issue section, where
+# every issue of one project sat past row 20.
 jiraSections:
   - title: My Issues
-    jql: assignee = currentUser() AND statusCategory != Done
+    jql: assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC
     limit: 20
   - title: Reported by me
-    jql: reporter = currentUser() AND statusCategory != Done
+    jql: reporter = currentUser() AND statusCategory != Done ORDER BY updated DESC
     limit: 20
   # Add company-specific sections in config.local.yml, not here:
   #
   #   - title: Current Sprint
   #     jql: >-
   #       project = ABC AND sprint in openSprints() AND statusCategory != Done
+  #       ORDER BY updated DESC
   #     limit: 30
 
 defaults:
