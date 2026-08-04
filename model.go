@@ -155,8 +155,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.err.Error()
 			return m, nil
 		}
-		if msg.key == m.detailKey {
-			m.detail.SetContent(msg.markdown)
+		if msg.key != "" && msg.key == m.detailKey {
+			m.detail.SetContent(renderMarkdown(msg.markdown, m.detail.Width))
 		}
 		return m, nil
 
@@ -324,12 +324,3 @@ func maxInt(a, b int) int {
 	}
 	return b
 }
-
-// selectionChanged debounces the detail fetch; filled in by the detail task.
-// The receiver is a pointer because the real version bumps detailSeq, and a
-// value receiver would drop that mutation. Inside Update's value receiver, `m`
-// is addressable, so `m.selectionChanged()` mutates the copy that gets
-// returned - which is exactly what is wanted.
-func (m *Model) selectionChanged() tea.Cmd { return nil }
-
-func (m Model) loadIssue(string) tea.Cmd { return nil }
