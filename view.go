@@ -392,6 +392,23 @@ func renderCreatePrompt(m Model) string {
 	return fmt.Sprintf("new %s in %s: %s_", m.createType, target, m.createDraft)
 }
 
+// renderAskPrompt names the issue the instruction will be about, because the
+// prompt sits at the bottom of the screen and the row it came from may have
+// scrolled out of the window by the time you finish typing.
+func renderAskPrompt(m Model) string {
+	label := "ask"
+	for _, kb := range m.cfg.Keybindings.Issues {
+		if kb.Key == m.askKey {
+			label = orDefault(kb.Name, "ask")
+		}
+	}
+	key := "?"
+	if row, ok := m.sections[m.active].selected(); ok {
+		key = row.Key
+	}
+	return fmt.Sprintf("%s about %s: %s_", label, key, m.askDraft)
+}
+
 func (m Model) View() string {
 	st := newStyles(m.cfg.Theme)
 	s := m.sections[m.active]
@@ -437,6 +454,8 @@ func (m Model) View() string {
 	switch {
 	case m.creating:
 		promptLine = renderCreatePrompt(m)
+	case m.asking:
+		promptLine = renderAskPrompt(m)
 	case m.filtering:
 		promptLine = "/" + m.filterDraft
 	case s.filter != "":
@@ -554,7 +573,20 @@ func (m Model) copySelected(field func(Issue) string) tea.Cmd {
 
 // runUserKeybinding runs a command from the config. The dashboard itself never
 // writes to Jira; anything that changes state goes through here.
+//
+// A key that declared prompt: true does not run yet - it opens the ask prompt,
+// and comes back through runUserKeybindingWith once there is an instruction.
 func (m Model) runUserKeybinding(key string) (tea.Model, tea.Cmd) {
+	for _, kb := range m.cfg.Keybindings.Issues {
+		if kb.Key == key && kb.Prompt {
+			return m.openAskPrompt(key)
+		}
+	}
+	return m.runUserKeybindingWith(key, "")
+}
+
+// runUserKeybindingWith is the same, with an instruction to put in {{.Prompt}}.
+func (m Model) runUserKeybindingWith(key, instruction string) (tea.Model, tea.Cmd) {
 	issue, ok := m.sections[m.active].selected()
 	if !ok {
 		return m, nil
@@ -563,7 +595,11 @@ func (m Model) runUserKeybinding(key string) (tea.Model, tea.Cmd) {
 		if kb.Key != key {
 			continue
 		}
-		rendered, err := RenderCommand(kb.Command, NewIssueVars(issue))
+		vars := NewIssueVars(issue)
+		if instruction != "" {
+			vars = NewAskVars(issue, AskPrompt(issue, m.detailBody, instruction))
+		}
+		rendered, err := RenderCommand(kb.Command, vars)
 		if err != nil {
 			m.status = err.Error()
 			return m, nil

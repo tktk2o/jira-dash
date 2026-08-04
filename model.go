@@ -119,6 +119,13 @@ type Model struct {
 	createDraft string
 	createType  string
 
+	// The ask prompt collects an instruction to hand a configured command, which
+	// in practice means handing it to Claude. askKey is which keybinding opened
+	// it: the command to run lives in the config, not here.
+	asking   bool
+	askDraft string
+	askKey   string
+
 	pendingG bool
 	showHelp bool
 	status   string
@@ -335,6 +342,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.creating {
 		return m.handleCreateKey(msg)
 	}
+	if m.asking {
+		return m.handleAskKey(msg)
+	}
 
 	// Any key other than a second g disarms the gg motion. This has to happen
 	// before the switch: most cases return from inside it, so clearing the flag
@@ -434,6 +444,70 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // empty section: the project and sprint are inherited from the row under the
 // cursor, so with no row there is nothing to inherit and `jira create` would be
 // handed an empty -p.
+// openAskPrompt starts the ask flow for a keybinding that declared prompt: true.
+// The instruction is typed here rather than baked into the config command,
+// because what you want done with an issue is different every time - a fixed
+// prompt is a different feature, and the keys without prompt: true still are one.
+func (m Model) openAskPrompt(key string) (tea.Model, tea.Cmd) {
+	if _, ok := m.sections[m.active].selected(); !ok {
+		m.status = "nothing to ask about: this section has no rows"
+		return m, nil
+	}
+	m.asking = true
+	m.askDraft = ""
+	m.askKey = key
+	return m, nil
+}
+
+func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		// An empty instruction would hand over the issue and nothing to do with
+		// it, which is what the keys without prompt: true are for. The prompt
+		// stays open rather than launching something pointless.
+		if strings.TrimSpace(m.askDraft) == "" {
+			return m, nil
+		}
+		key, draft := m.askKey, strings.TrimSpace(m.askDraft)
+		m.asking = false
+		m.askDraft = ""
+		m.askKey = ""
+		return m.runUserKeybindingWith(key, draft)
+
+	case tea.KeyEsc:
+		m.asking = false
+		m.askDraft = ""
+		m.askKey = ""
+		return m, nil
+	case tea.KeyBackspace:
+		if m.askDraft != "" {
+			r := []rune(m.askDraft)
+			m.askDraft = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeyRunes, tea.KeySpace:
+		m.askDraft += string(msg.Runes)
+		if msg.Type == tea.KeySpace {
+			m.askDraft += " "
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// AskPrompt assembles what the configured command receives as {{.Prompt}}: the
+// issue, then the instruction. The description is included because the preview
+// already fetched it - without it the receiving end has to spend another ~360ms
+// on `jira get` to learn what the issue says, and it may not have credentials at
+// all. An empty body is simply left out rather than announced.
+func AskPrompt(i Issue, body, instruction string) string {
+	parts := []string{i.Key + " " + i.Summary}
+	if b := strings.TrimSpace(body); b != "" && b != "*no description*" {
+		parts = append(parts, b)
+	}
+	return strings.Join(append(parts, "---", instruction), "\n\n")
+}
+
 func (m Model) openCreatePrompt(issueType string) (tea.Model, tea.Cmd) {
 	if _, ok := m.sections[m.active].selected(); !ok {
 		m.status = "nothing to create from: this section has no rows"

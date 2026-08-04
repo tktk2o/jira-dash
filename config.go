@@ -64,6 +64,10 @@ type Keybinding struct {
 	// Name is what the help calls this key. Optional: without it the help falls
 	// back to the command, which is honest but usually longer than the pane.
 	Name string `yaml:"name"`
+	// Prompt makes the key ask for an instruction before running, and puts the
+	// issue plus that instruction in {{.Prompt}}. Without it the key runs at
+	// once, which is the right shape for a fixed command like opening a browser.
+	Prompt bool `yaml:"prompt"`
 }
 
 type Theme struct {

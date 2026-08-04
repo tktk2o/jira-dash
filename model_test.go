@@ -610,3 +610,126 @@ func TestCreateRefetchKeepsTheRowsVisible(t *testing.T) {
 		t.Errorf("issues = %d, want the %d existing rows kept", len(m.sections[0].issues), before)
 	}
 }
+
+// askTestModel is a model with one prompt: true keybinding, capturing what the
+// rendered command came out as instead of running it.
+func askTestModel(t *testing.T) Model {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Keybindings.Issues = []Keybinding{{
+		Key: "a", Name: "ask claude", Prompt: true,
+		Command: "tmux new-window claude {{.Prompt}}",
+	}}
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	return settled(next.(Model))
+}
+
+// A prompt: true key must not run on the keypress - the instruction is the whole
+// point, and a command launched without one is a different feature.
+func TestAskKeyOpensAPromptInsteadOfRunning(t *testing.T) {
+	m := askTestModel(t)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = next.(Model)
+
+	if !m.asking {
+		t.Fatal("the ask prompt should be open")
+	}
+	if cmd != nil {
+		t.Error("nothing should run until an instruction has been typed")
+	}
+	if !strings.Contains(m.View(), "ask claude about ABC-1") {
+		t.Errorf("the prompt should name the issue: %q", m.View())
+	}
+}
+
+// An empty instruction hands over an issue and nothing to do with it. The prompt
+// stays open rather than launching something pointless.
+func TestAskRefusesAnEmptyInstruction(t *testing.T) {
+	m := askTestModel(t)
+	m = press(m, "a")
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	if cmd != nil || !m.asking {
+		t.Error("enter on an empty instruction should do nothing and keep the prompt")
+	}
+}
+
+func TestAskEscapeClosesThePrompt(t *testing.T) {
+	m := askTestModel(t)
+	m = press(m, "a")
+	for _, r := range "hi" {
+		m = press(m, string(r))
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+
+	if m.asking || m.askDraft != "" {
+		t.Errorf("esc should cancel: asking=%v draft=%q", m.asking, m.askDraft)
+	}
+}
+
+// The prompt carries the description because the preview already fetched it:
+// without it the receiving end spends another ~360ms on `jira get`, and may have
+// no credentials at all.
+func TestAskPromptCarriesTheIssueAndTheInstruction(t *testing.T) {
+	issue := Issue{Key: "ABC-1", Summary: "トークン更新で 500 が出る"}
+
+	got := AskPrompt(issue, "## 再現手順\n\n1. ログインする", "影響範囲を調べて")
+
+	for _, want := range []string{"ABC-1", "トークン更新で 500 が出る", "再現手順", "影響範囲を調べて"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q: %q", want, got)
+		}
+	}
+}
+
+// "*no description*" is this program's own words for an absent body, not
+// something the issue says. Forwarding it would have Claude answer about it.
+func TestAskPromptLeavesOutAnAbsentDescription(t *testing.T) {
+	issue := Issue{Key: "ABC-1", Summary: "a title"}
+
+	for _, body := range []string{"", "  ", "*no description*"} {
+		if got := AskPrompt(issue, body, "do the thing"); strings.Contains(got, "no description") {
+			t.Errorf("body %q leaked into the prompt: %q", body, got)
+		}
+	}
+}
+
+// A title and a description are free text from whoever filed the issue, and the
+// prompt becomes one shell argument.
+func TestAskPromptIsShellQuotedLikeEveryOtherVariable(t *testing.T) {
+	issue := Issue{Key: "ABC-1", Summary: `x'; rm -rf ~ #`}
+
+	vars := NewAskVars(issue, AskPrompt(issue, "", "go"))
+	got, err := RenderCommand("claude {{.Prompt}}", vars)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	body := strings.TrimPrefix(got, "claude ")
+	if !strings.HasPrefix(body, "'") || !strings.HasSuffix(body, "'") {
+		t.Fatalf("the prompt was not quoted: %s", got)
+	}
+	if strings.Contains(strings.ReplaceAll(body[1:len(body)-1], `'\''`, ""), "'") {
+		t.Errorf("quoting was broken out of: %s", got)
+	}
+}
+
+// A key without prompt: true still runs at once - that shape is right for a
+// fixed command, and it is what the existing keys are.
+func TestAKeyWithoutPromptStillRunsImmediately(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Keybindings.Issues = []Keybinding{{Key: "o", Command: "true"}}
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if next.(Model).asking {
+		t.Error("a key without prompt: true must not open the prompt")
+	}
+	if cmd == nil {
+		t.Error("it should run at once")
+	}
+}

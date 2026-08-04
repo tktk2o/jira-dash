@@ -20,9 +20,21 @@ type IssueVars struct {
 	Status     string
 	Assignee   string
 	ProjectKey string
+	// Prompt is the issue plus whatever instruction was typed at the ask prompt.
+	// It is empty for a keybinding without prompt: true, so a command that uses
+	// it on such a key gets an empty argument rather than a template error - the
+	// same shape as an issue with no assignee.
+	Prompt string
 }
 
 func NewIssueVars(i Issue) IssueVars {
+	return NewAskVars(i, "")
+}
+
+// NewAskVars is NewIssueVars plus the assembled prompt. Both go through the same
+// quoting: a prompt carries an issue title and a description, which are free text
+// written by whoever filed the issue, and it is about to become a shell argument.
+func NewAskVars(i Issue, prompt string) IssueVars {
 	return IssueVars{
 		IssueKey:   shellQuote(i.Key),
 		IssueURL:   shellQuote(i.URL),
@@ -30,6 +42,7 @@ func NewIssueVars(i Issue) IssueVars {
 		Status:     shellQuote(i.Status),
 		Assignee:   shellQuote(i.AssigneeName()),
 		ProjectKey: shellQuote(i.Project.Key),
+		Prompt:     shellQuote(prompt),
 	}
 }
 

@@ -77,6 +77,14 @@ keybindings:
         tmux new-window -n {{.IssueKey}}
         claude --permission-mode auto {{.IssueKey}}
 
+    #: 指示を打って Claude に渡す（課題・本文つき、新しい tmux ウィンドウ）
+    - key: a
+      name: ask claude
+      prompt: true
+      command: >-
+        tmux new-window -n {{.IssueKey}}
+        claude --permission-mode auto {{.Prompt}}
+
 theme:
   colors: # Dracula
     text:
