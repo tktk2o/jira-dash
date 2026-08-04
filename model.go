@@ -205,6 +205,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
+	// Any key other than a second g disarms the gg motion. This has to happen
+	// before the switch: most cases return from inside it, so clearing the flag
+	// afterwards would only ever run for unhandled keys, and `g j g` would
+	// still jump to the top.
+	if msg.String() != "g" {
+		m.pendingG = false
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -254,7 +262,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.pendingG = false
 	return m.runUserKeybinding(msg.String())
 }
 

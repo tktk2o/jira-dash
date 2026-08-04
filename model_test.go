@@ -191,6 +191,23 @@ func TestGotoTopAndBottom(t *testing.T) {
 	}
 }
 
+// vim semantics: an intervening key disarms a half-typed gg. Without this the
+// stale arm makes a later single g jump to the top.
+func TestInterveningKeyDisarmsGG(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("A-1", "A-2", "A-3"), at: time.Now()})
+	m = next.(Model)
+	m = press(m, "G")
+
+	m = press(m, "g")
+	m = press(m, "j")
+	m = press(m, "g")
+
+	if m.sections[0].cursor == 0 {
+		t.Error("g j g must not jump to the top; the first g should have been disarmed by j")
+	}
+}
+
 func TestFilterNarrowsRowsWithoutRefetching(t *testing.T) {
 	fake := fakeSearcher{}
 	m := newTestModel(t, fake)
