@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# jhd-claude-split - open a command in a tmux pane beside jira-dash, up to two.
+#
+# Usage: jhd-claude-split <dir> <command> [args...]
+#
+# Called from a jira-dash keybinding. The pane layout is the whole point:
+#
+#   ┌────────────────────────────────┐
+#   │ jira-dash                      │   the dashboard keeps its full width,
+#   ├───────────────┬────────────────┤   so the table and preview stay usable
+#   │ first         │ second         │
+#   └───────────────┴────────────────┘
+#
+# The first pane splits the dashboard downwards, which costs it rows but no
+# columns. The second splits the *first pane* sideways, so the dashboard is not
+# touched at all. A third is refused: splitting further left the dashboard two
+# rows tall, which is not a dashboard.
+#
+# Why a script rather than the config's command: choosing between -v and -h
+# needs to know how many panes are already open, and refusing needs somewhere to
+# say so. Neither fits in a template string, and neither belongs in jira-dash -
+# it does not otherwise know that tmux exists.
+
+set -euo pipefail
+
+readonly MARKER='@jhd-claude'
+readonly MAX_PANES=2
+readonly FIRST_PANE_HEIGHT=15
+
+die() {
+	# display-message as well as stderr: jira-dash hands the command the
+	# terminal and redraws over it immediately, so stderr alone is never read.
+	# tmux's status line is where a message like this survives.
+	if [[ -n "${TMUX:-}" ]]; then
+		tmux display-message "jhd: $1"
+	fi
+	echo "jhd-claude-split: $1" >&2
+	exit 1
+}
+
+if [[ $# -lt 2 ]]; then
+	die "usage: jhd-claude-split <dir> <command> [args...]"
+fi
+
+dir=$1
+shift
+
+# Outside tmux there is no pane to split - and worse, `tmux split-window` would
+# still succeed: it resolves against whatever server is running and splits some
+# unrelated window. Measured. So this is a refusal, not a fallback.
+if [[ -z "${TMUX:-}" || -z "${TMUX_PANE:-}" ]]; then
+	die "not inside tmux; cannot open a pane"
+fi
+
+# Panes this script opened, in the window jira-dash is in. A pane's options die
+# with the pane, so closing one frees its slot without any bookkeeping.
+# Counted with grep rather than read into an array: macOS ships bash 3.2, which
+# has no mapfile, and this script runs from a keybinding on that bash.
+marked=$(tmux list-panes -t "$TMUX_PANE" -F "#{pane_id} #{${MARKER}}" |
+	awk '$2 == "1" { print $1 }')
+count=$(printf '%s' "$marked" | grep -c . || true)
+first=$(printf '%s\n' "$marked" | head -1)
+
+case $count in
+0)
+	# Downwards, full window width, at a fixed height: the dashboard loses rows
+	# but keeps every column, so its preview and column layout survive.
+	new=$(tmux split-window -t "$TMUX_PANE" -fv -l "$FIRST_PANE_HEIGHT" \
+		-c "$dir" -P -F '#{pane_id}' "$@") ||
+		die "tmux could not split the window (is the pane too short?)"
+	;;
+1)
+	# Sideways, out of the first pane's space rather than the dashboard's.
+	new=$(tmux split-window -t "$first" -h \
+		-c "$dir" -P -F '#{pane_id}' "$@") ||
+		die "tmux could not split the pane (is it too narrow?)"
+	;;
+*)
+	die "already $MAX_PANES panes open - close one first"
+	;;
+esac
+
+tmux set-option -p -t "$new" "$MARKER" 1
