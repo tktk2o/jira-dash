@@ -97,6 +97,13 @@ type Model struct {
 	filtering   bool
 	filterDraft string
 
+	// The create prompt is the one place the dashboard writes to Jira. It holds
+	// only the summary: the type comes from which key opened it, and the project
+	// and sprint from the row the cursor was on.
+	creating    bool
+	createDraft string
+	createType  string
+
 	pendingG bool
 	showHelp bool
 	status   string
@@ -173,6 +180,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case createdMsg:
+		if msg.err != nil {
+			m.status = "create failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.status = "created " + msg.issue.Key
+		// Refresh the section it went into, so the new row appears without an r.
+		if msg.idx >= 0 && msg.idx < len(m.sections) {
+			m.sections[msg.idx].loading = true
+			return m, fetchSection(m.searcher, msg.idx, m.sections[msg.idx].cfg)
+		}
+		return m, nil
+
 	case debounceMsg:
 		// A stale tick from a cursor position we have already left.
 		if msg.seq != m.detailSeq {
@@ -232,6 +252,9 @@ func (m Model) applyFetched(msg fetchedMsg) Model {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.filtering {
 		return m.handleFilterKey(msg)
+	}
+	if m.creating {
+		return m.handleCreateKey(msg)
 	}
 
 	// Any key other than a second g disarms the gg motion. This has to happen
@@ -293,7 +316,96 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A configured create key wins over a configured issue keybinding; LoadConfig
+	// has already refused any create key that collides with the cases above.
+	for _, ck := range m.cfg.Create {
+		if ck.Key == msg.String() {
+			return m.openCreatePrompt(ck.Type)
+		}
+	}
+
 	return m.runUserKeybinding(msg.String())
+}
+
+// openCreatePrompt starts the create flow for one issue type. It refuses on an
+// empty section: the project and sprint are inherited from the row under the
+// cursor, so with no row there is nothing to inherit and `jira create` would be
+// handed an empty -p.
+func (m Model) openCreatePrompt(issueType string) (tea.Model, tea.Cmd) {
+	if _, ok := m.sections[m.active].selected(); !ok {
+		m.status = "nothing to create from: this section has no rows"
+		return m, nil
+	}
+	m.creating = true
+	m.createDraft = ""
+	m.createType = issueType
+	return m, nil
+}
+
+func (m Model) handleCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		// `jira create` requires -s, so an empty summary is refused here rather
+		// than coming back as a CLI failure 360ms later. The prompt stays open.
+		if strings.TrimSpace(m.createDraft) == "" {
+			return m, nil
+		}
+		row, ok := m.sections[m.active].selected()
+		if !ok {
+			m.creating = false
+			m.status = "the row this create was based on is gone"
+			return m, nil
+		}
+		req := NewIssueRequest{
+			Project: row.Project.Key,
+			Type:    m.createType,
+			Summary: strings.TrimSpace(m.createDraft),
+		}
+		if sprint, ok := row.CurrentSprint(); ok {
+			req.SprintID = sprint.ID
+		}
+
+		m.creating = false
+		m.createDraft = ""
+		m.status = "creating " + req.Type + "..."
+		return m, createIssue(m.searcher, m.active, req)
+
+	case tea.KeyEsc:
+		m.creating = false
+		m.createDraft = ""
+		return m, nil
+	case tea.KeyBackspace:
+		if m.createDraft != "" {
+			r := []rune(m.createDraft)
+			m.createDraft = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeyRunes, tea.KeySpace:
+		m.createDraft += string(msg.Runes)
+		if msg.Type == tea.KeySpace {
+			m.createDraft += " "
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// createdMsg reports the outcome. idx is the section the create was launched
+// from, so the refresh lands there even if the cursor has moved on since.
+type createdMsg struct {
+	issue Issue
+	idx   int
+	err   error
+}
+
+func createIssue(s Searcher, idx int, req NewIssueRequest) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+
+		created, err := s.Create(ctx, req)
+		return createdMsg{issue: created, idx: idx, err: err}
+	}
 }
 
 func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

@@ -211,3 +211,36 @@ func TestViewDropsPreviewOnNarrowTerminal(t *testing.T) {
 		t.Error("View should still render")
 	}
 }
+
+// The project and sprint are inherited, not typed, so the prompt has to show
+// where the issue will land before enter is pressed.
+func TestCreatePromptNamesItsTarget(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+	m = press(m, "c")
+	for _, r := range "hi" {
+		m = press(m, string(r))
+	}
+
+	line := renderCreatePrompt(m)
+	for _, want := range []string{"Task", "ABC", "Team 0803-0807", "hi"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("prompt %q is missing %q", line, want)
+		}
+	}
+}
+
+// It replaces the filter line rather than adding one, so opening it must not
+// make the view taller and push the table up.
+func TestCreatePromptDoesNotAddALine(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+	before := strings.Count(m.View(), "\n")
+
+	m = press(m, "c")
+
+	if after := strings.Count(m.View(), "\n"); after != before+1 {
+		t.Errorf("view went from %d to %d lines; the prompt should add exactly one",
+			before, after)
+	}
+}

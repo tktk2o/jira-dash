@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -66,8 +67,32 @@ type Issue struct {
 // was measured returning 2 of that sprint's 15 issues. So the match happens
 // here instead.
 type Sprint struct {
+	// ID is carried so that creating an issue can name the sprint numerically.
+	// `jira create -S` takes a name too, but then the CLI has to resolve it, and
+	// two boards can hold sprints with the same name.
+	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	State string `json:"state"`
+}
+
+// CurrentSprint is the sprint a new issue should join to land in the same place
+// as this one: the active sprint if there is one, otherwise a future sprint,
+// which is how a named backlog is modelled. Closed is never it - an issue keeps
+// every sprint it has ever been in, so the last entry is not the current one.
+func (i Issue) CurrentSprint() (Sprint, bool) {
+	var future Sprint
+	var haveFuture bool
+	for _, s := range i.Sprint {
+		switch s.State {
+		case "active":
+			return s, true
+		case "future":
+			if !haveFuture {
+				future, haveFuture = s, true
+			}
+		}
+	}
+	return future, haveFuture
 }
 
 // InActiveSprintPrefix reports whether the issue sits in a currently active
@@ -111,9 +136,38 @@ func ParseSearchJSON(b []byte) ([]Issue, error) {
 // Searcher is the only door to the outside world. Keeping it one interface
 // means the whole UI is testable without a network, and that the CLI can be
 // swapped for direct REST calls later without touching the model.
+//
+// Create is the one write in the whole program. It is on this interface rather
+// than routed through a user-configured command because the summary has to be
+// typed into the dashboard, and a config command cannot ask for input.
 type Searcher interface {
 	Search(ctx context.Context, jql string, limit int) ([]Issue, error)
 	Issue(ctx context.Context, key string) (string, error)
+	Create(ctx context.Context, req NewIssueRequest) (Issue, error)
+}
+
+// NewIssueRequest is everything the create prompt collects. Project and sprint
+// are not typed by hand: they are read off the row the cursor was on, which is
+// what makes a new issue land beside the ones you were looking at.
+type NewIssueRequest struct {
+	Project  string
+	Type     string
+	Summary  string
+	SprintID int
+}
+
+// CreateArgs builds the argv for `jira create`. It is separate from the call so
+// the flag assembly can be tested without running anything, and it returns a
+// slice - exec.Command takes argv directly, never a shell, so a summary like
+// `'; rm -rf ~` is one argument of data.
+func CreateArgs(req NewIssueRequest) []string {
+	args := []string{"create", "-p", req.Project, "-t", req.Type, "-s", req.Summary}
+	// An empty -S would be read as a sprint named "", so a section without a
+	// sprint passes no flag at all.
+	if req.SprintID != 0 {
+		args = append(args, "-S", strconv.Itoa(req.SprintID))
+	}
+	return append(args, "-f", "json")
 }
 
 // CLI runs the `jira` command. Every invocation pays ~360ms of tsx startup
@@ -128,6 +182,31 @@ func (c CLI) Search(ctx context.Context, jql string, limit int) ([]Issue, error)
 		return nil, err
 	}
 	return ParseSearchJSON(out)
+}
+
+func (c CLI) Create(ctx context.Context, req NewIssueRequest) (Issue, error) {
+	out, err := c.run(ctx, CreateArgs(req)...)
+	if err != nil {
+		return Issue{}, err
+	}
+	return ParseCreateJSON(out)
+}
+
+// ParseCreateJSON reads what `jira create -f json` prints: {key, id, self,
+// url}. A response without a key is treated as a failure - the CLI exits 0 on
+// some paths, and reporting "created " with no key would look like success.
+func ParseCreateJSON(b []byte) (Issue, error) {
+	var created struct {
+		Key string `json:"key"`
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(b, &created); err != nil {
+		return Issue{}, err
+	}
+	if created.Key == "" {
+		return Issue{}, errors.New("create returned no issue key")
+	}
+	return Issue{Key: created.Key, URL: created.URL}, nil
 }
 
 func (c CLI) Issue(ctx context.Context, key string) (string, error) {

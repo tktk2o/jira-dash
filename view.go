@@ -138,7 +138,23 @@ func renderHelp() string {
 		"y/Y            copy key / url",
 		"?              help",
 		"q              quit",
+		"",
+		"create keys come from the config (esc cancels)",
 	}, "\n")
+}
+
+// renderCreatePrompt states where the new issue will land before it is created,
+// because the project and sprint are inherited rather than typed: without them
+// on screen there is nothing to check against before pressing enter.
+func renderCreatePrompt(m Model) string {
+	target := ""
+	if row, ok := m.sections[m.active].selected(); ok {
+		target = row.Project.Key
+		if sprint, ok := row.CurrentSprint(); ok {
+			target += " / " + sprint.Name
+		}
+	}
+	return fmt.Sprintf("new %s in %s: %s_", m.createType, target, m.createDraft)
 }
 
 func (m Model) View() string {
@@ -181,16 +197,29 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.border.Render(m.detail.View()))
 	}
 
-	filterLine := ""
-	if m.filtering {
-		filterLine = "/" + m.filterDraft
-	} else if s.filter != "" {
-		filterLine = "filter: " + s.filter
+	// The create prompt takes the filter's line instead of adding one, so the
+	// table does not shift by a row when it opens.
+	promptLine, prompting := "", true
+	switch {
+	case m.creating:
+		promptLine = renderCreatePrompt(m)
+	case m.filtering:
+		promptLine = "/" + m.filterDraft
+	case s.filter != "":
+		promptLine, prompting = "filter: "+s.filter, false
+	default:
+		prompting = false
 	}
 
 	sections := []string{renderTabs(m), body}
-	if filterLine != "" {
-		sections = append(sections, st.footer.Render(filterLine))
+	if promptLine != "" {
+		if prompting {
+			// The prompt is where the keyboard is, so it gets the same fill the
+			// active tab and selected row use rather than the footer's grey.
+			sections = append(sections, st.selectedRow.Render(promptLine))
+		} else {
+			sections = append(sections, st.footer.Render(promptLine))
+		}
 	}
 	sections = append(sections, renderFooter(m))
 	return strings.Join(sections, "\n")

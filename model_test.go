@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,20 @@ import (
 type fakeSearcher struct {
 	issues map[string][]Issue
 	err    error
+
+	// created records what the create prompt asked for, so a test can assert the
+	// project and sprint were read off the row rather than typed by hand.
+	created *[]NewIssueRequest
+}
+
+func (f fakeSearcher) Create(_ context.Context, req NewIssueRequest) (Issue, error) {
+	if f.created != nil {
+		*f.created = append(*f.created, req)
+	}
+	if f.err != nil {
+		return Issue{}, f.err
+	}
+	return Issue{Key: "NEW-1", URL: "https://example.atlassian.net/browse/NEW-1"}, nil
 }
 
 func (f fakeSearcher) Search(_ context.Context, jql string, _ int) ([]Issue, error) {
@@ -338,5 +353,159 @@ func TestSprintPrefixNarrowsTheSection(t *testing.T) {
 	s.filter = "abc-2"
 	if got := s.visible(); len(got) != 0 {
 		t.Errorf("filter and prefix should both apply: %+v", got)
+	}
+}
+
+func createTestModel(t *testing.T, recorded *[]NewIssueRequest) Model {
+	t.Helper()
+	cfg := testConfig()
+	cfg.Create = []CreateKey{{Key: "c", Type: "Task"}, {Key: "C", Type: "Story"}}
+	m := NewModel(cfg, fakeSearcher{created: recorded}, NewCache(t.TempDir()), fixedNow())
+	m.width, m.height = 200, 40
+
+	row := Issue{Key: "ABC-1", Summary: "a row", Sprint: []Sprint{
+		{ID: 9, Name: "Team 0727-0731", State: "closed"},
+		{ID: 13126, Name: "Team 0803-0807", State: "active"},
+	}}
+	row.Project.Key = "ABC"
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: []Issue{row}, at: fixedNow()()})
+	return next.(Model)
+}
+
+// The whole point of creating from a tab: the project and sprint are taken from
+// the row under the cursor, so the new issue lands beside what you were looking
+// at. Only the summary is typed.
+func TestCreateTakesProjectAndSprintFromTheRow(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+
+	m = press(m, "c")
+	if !m.creating {
+		t.Fatal("c should open the create prompt")
+	}
+	for _, r := range "new thing" {
+		m = press(m, string(r))
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter should submit")
+	}
+	cmd() // the create runs in a tea.Cmd
+
+	if len(got) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(got))
+	}
+	want := NewIssueRequest{Project: "ABC", Type: "Task", Summary: "new thing", SprintID: 13126}
+	if got[0] != want {
+		t.Errorf("request = %+v, want %+v", got[0], want)
+	}
+	if m.creating {
+		t.Error("the prompt should close on submit")
+	}
+}
+
+// The key decides the type; that is how gh-dash works and it keeps the type out
+// of the typed text.
+func TestCreateKeyChoosesTheIssueType(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+
+	m = press(m, "C")
+	m = press(m, "x")
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = next
+	cmd()
+
+	if len(got) != 1 || got[0].Type != "Story" {
+		t.Fatalf("request = %+v, want type Story", got)
+	}
+}
+
+func TestCreateIsCancelledByEsc(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+
+	m = press(m, "c")
+	m = press(m, "x")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+
+	if m.creating {
+		t.Error("esc should close the prompt")
+	}
+	if len(got) != 0 {
+		t.Errorf("nothing should have been created: %+v", got)
+	}
+	// A cancelled draft must not come back on the next c.
+	m = press(m, "c")
+	if m.createDraft != "" {
+		t.Errorf("draft = %q, want empty", m.createDraft)
+	}
+}
+
+// An empty summary is rejected locally rather than sent: `jira create` requires
+// -s, and the error would come back 360ms later as a CLI failure.
+func TestCreateRefusesAnEmptySummary(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+
+	m = press(m, "c")
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	if cmd != nil {
+		t.Error("an empty summary should not submit")
+	}
+	if !m.creating {
+		t.Error("the prompt should stay open so the summary can be typed")
+	}
+	if len(got) != 0 {
+		t.Errorf("nothing should have been created: %+v", got)
+	}
+}
+
+// A tab with no rows has no project or sprint to inherit, so there is nothing
+// to create from. Better to say so than to send a request with an empty -p.
+func TestCreateIsRefusedOnAnEmptySection(t *testing.T) {
+	cfg := testConfig()
+	cfg.Create = []CreateKey{{Key: "c", Type: "Task"}}
+	m := NewModel(cfg, fakeSearcher{}, NewCache(t.TempDir()), fixedNow())
+	m.width, m.height = 200, 40
+
+	m = press(m, "c")
+
+	if m.creating {
+		t.Error("the prompt should not open with no row to inherit from")
+	}
+	if m.status == "" {
+		t.Error("the footer should say why nothing happened")
+	}
+}
+
+// Once created, the row should appear without pressing r.
+func TestCreatedIssueRefetchesItsSection(t *testing.T) {
+	m := createTestModel(t, nil)
+	next, cmd := m.Update(createdMsg{issue: Issue{Key: "NEW-1"}, idx: 0})
+	m = next.(Model)
+
+	if cmd == nil {
+		t.Error("a successful create should refresh the section it went into")
+	}
+	if !strings.Contains(m.status, "NEW-1") {
+		t.Errorf("status = %q, want the new key in it", m.status)
+	}
+}
+
+func TestCreateFailureIsReportedNotSwallowed(t *testing.T) {
+	m := createTestModel(t, nil)
+	next, cmd := m.Update(createdMsg{err: errors.New("boom"), idx: 0})
+	m = next.(Model)
+
+	if cmd != nil {
+		t.Error("a failed create should not trigger a refresh")
+	}
+	if !strings.Contains(m.status, "boom") {
+		t.Errorf("status = %q, want the error in it", m.status)
 	}
 }

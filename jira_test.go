@@ -197,3 +197,117 @@ func TestInActiveSprintPrefixIsOffWhenEmpty(t *testing.T) {
 		t.Error("an empty prefix should keep every issue")
 	}
 }
+
+// Creating an issue "in the same place" means the sprint of the row you are
+// standing on. Closed sprints are skipped: an issue keeps every sprint it has
+// ever been in, so the most recent one is not necessarily the current one.
+func TestCurrentSprintPrefersActiveThenFuture(t *testing.T) {
+	active := Sprint{ID: 3, Name: "Team 0803-0807", State: "active"}
+	future := Sprint{ID: 4, Name: "Team backlog", State: "future"}
+	closed := Sprint{ID: 1, Name: "Team 0727-0731", State: "closed"}
+
+	for name, tc := range map[string]struct {
+		in   []Sprint
+		want int
+		ok   bool
+	}{
+		"active wins over a backlog": {[]Sprint{closed, future, active}, 3, true},
+		"a backlog when none active": {[]Sprint{closed, future}, 4, true},
+		"closed only is no sprint":   {[]Sprint{closed}, 0, false},
+		"no sprint at all":           {nil, 0, false},
+	} {
+		got, ok := Issue{Sprint: tc.in}.CurrentSprint()
+		if ok != tc.ok {
+			t.Errorf("%s: ok = %v, want %v", name, ok, tc.ok)
+			continue
+		}
+		if got.ID != tc.want {
+			t.Errorf("%s: sprint id = %d, want %d", name, got.ID, tc.want)
+		}
+	}
+}
+
+// The sprint id comes straight from the search results, so create never pays
+// the CLI's name-to-id lookup.
+func TestParseSearchJSONKeepsTheSprintID(t *testing.T) {
+	issues, err := ParseSearchJSON([]byte(
+		`{"results":[{"key":"ABC-1","sprint":[{"id":13126,"name":"Team 0803-0807","state":"active"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues[0].Sprint[0].ID != 13126 {
+		t.Errorf("sprint id = %d, want 13126", issues[0].Sprint[0].ID)
+	}
+}
+
+func TestCreateArgs(t *testing.T) {
+	got := CreateArgs(NewIssueRequest{
+		Project: "ABC", Type: "Task", Summary: "a title", SprintID: 13126,
+	})
+	want := []string{"create", "-p", "ABC", "-t", "Task", "-s", "a title", "-S", "13126", "-f", "json"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+}
+
+// A section with no sprint (say, "assigned to me") must not pass -S at all:
+// the CLI would take an empty value as a sprint named "".
+func TestCreateArgsOmitsAnAbsentSprint(t *testing.T) {
+	got := CreateArgs(NewIssueRequest{Project: "ABC", Type: "Task", Summary: "a title"})
+	for _, a := range got {
+		if a == "-S" {
+			t.Fatalf("args should carry no sprint flag: %v", got)
+		}
+	}
+}
+
+// The args are handed to exec.Command as a slice, never to a shell, so a
+// summary full of shell syntax is data. This pins that: the summary must
+// arrive as exactly one argument, unquoted and unescaped.
+func TestCreateArgsPassesAHostileSummaryVerbatim(t *testing.T) {
+	summary := `'; rm -rf ~ #`
+	got := CreateArgs(NewIssueRequest{Project: "ABC", Type: "Task", Summary: summary})
+	found := 0
+	for _, a := range got {
+		if a == summary {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("the summary should appear once, verbatim: %v", got)
+	}
+}
+
+// `jira create -f json` prints {key, id, self, url}. Only the key and the URL
+// are of any use here: the key goes in the footer, the URL makes the new issue
+// openable before the section has refetched.
+func TestParseCreateJSON(t *testing.T) {
+	got, err := ParseCreateJSON([]byte(`{
+		"key": "ABC-1234",
+		"id": "10001",
+		"self": "https://example.atlassian.net/rest/api/3/issue/10001",
+		"url": "https://example.atlassian.net/browse/ABC-1234"
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != "ABC-1234" {
+		t.Errorf("key = %q", got.Key)
+	}
+	if got.URL != "https://example.atlassian.net/browse/ABC-1234" {
+		t.Errorf("url = %q", got.URL)
+	}
+}
+
+// A create that prints something unparseable must be an error, not a silent
+// success reporting an empty key.
+func TestParseCreateJSONRejectsAKeylessResponse(t *testing.T) {
+	if _, err := ParseCreateJSON([]byte(`{"id":"10001"}`)); err == nil {
+		t.Error("a response with no key should be an error")
+	}
+}

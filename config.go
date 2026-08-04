@@ -17,7 +17,17 @@ type Config struct {
 	Sections    []Section   `yaml:"jiraSections"`
 	Defaults    Defaults    `yaml:"defaults"`
 	Keybindings Keybindings `yaml:"keybindings"`
+	Create      []CreateKey `yaml:"create"`
 	Theme       Theme       `yaml:"theme"`
+}
+
+// CreateKey binds a key to an issue type. Which types a site offers is
+// site-specific - on a Japanese site they are named in Japanese - so the
+// mapping is config rather than code. Everything else about the new issue comes
+// from the row the cursor is on.
+type CreateKey struct {
+	Key  string `yaml:"key"`
+	Type string `yaml:"type"`
 }
 
 type Section struct {
@@ -116,5 +126,26 @@ func LoadConfig(path string) (*Config, error) {
 			c.Sections[i].Limit = c.Defaults.Limit
 		}
 	}
+
+	for _, k := range c.Create {
+		if k.Key == "" || k.Type == "" {
+			return nil, fmt.Errorf("%s: every create entry needs both a key and a type", path)
+		}
+		// A create key that shadowed j, /, q or r would break navigation in a way
+		// that is hard to trace back to the config, so it is refused at load
+		// rather than silently losing to the switch in handleKey.
+		if reservedKeys[k.Key] {
+			return nil, fmt.Errorf("%s: create key %q is already a dashboard key", path, k.Key)
+		}
+	}
 	return &c, nil
+}
+
+// reservedKeys are the keys handleKey claims. Kept beside the check that uses
+// it so adding a binding there is a visible reason to add it here.
+var reservedKeys = map[string]bool{
+	"q": true, "tab": true, "shift+tab": true, "h": true, "l": true,
+	"left": true, "right": true, "j": true, "k": true, "up": true, "down": true,
+	"g": true, "G": true, "p": true, "/": true, "esc": true, "r": true,
+	"y": true, "Y": true, "?": true, "enter": true, "ctrl+c": true,
 }

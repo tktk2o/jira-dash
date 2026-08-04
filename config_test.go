@@ -109,3 +109,58 @@ func TestLoadConfigMissingFileMentionsSetup(t *testing.T) {
 		t.Errorf("error should point at the seed file, got: %v", err)
 	}
 }
+
+// The two create keys are config, not code: which issue types a site offers is
+// site-specific, and on a Japanese site they are named in Japanese.
+func TestLoadConfigReadsCreateTypes(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+create:
+  - key: c
+    type: Task
+  - key: C
+    type: Story
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Create) != 2 {
+		t.Fatalf("create entries = %d, want 2", len(cfg.Create))
+	}
+	if cfg.Create[0].Key != "c" || cfg.Create[0].Type != "Task" {
+		t.Errorf("first entry = %+v", cfg.Create[0])
+	}
+}
+
+// A create key that shadows a navigation key would make the dashboard
+// unusable in a way that is hard to diagnose, so it is rejected at load.
+func TestLoadConfigRejectsACreateKeyThatShadowsNavigation(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+create:
+  - key: j
+    type: Task
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a create key of j should be rejected")
+	}
+}
+
+// An entry with no type would send `jira create -t ""`.
+func TestLoadConfigRejectsACreateEntryWithoutAType(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+create:
+  - key: c
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a create entry with no type should be rejected")
+	}
+}
