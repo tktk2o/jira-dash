@@ -35,10 +35,14 @@ func safeKey(key string) string {
 	return keyReplacer.Replace(key)
 }
 
+// Cache is the on-disk store the dashboard renders from before any query
+// returns. It holds derived data only, so every read is allowed to fail.
 type Cache struct {
 	dir string
 }
 
+// NewCache roots a cache at dir. The directory is created lazily, on the first
+// write, so a run that only reads never leaves one behind.
 func NewCache(dir string) *Cache {
 	return &Cache{dir: dir}
 }
@@ -51,6 +55,8 @@ func SectionKey(jql string, limit int) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// CachedSection is one section's last known result, with the time it was
+// fetched: the footer states that age rather than implying the rows are current.
 type CachedSection struct {
 	FetchedAt time.Time `json:"fetchedAt"`
 	Issues    []Issue   `json:"issues"`
@@ -79,6 +85,8 @@ func (c *Cache) ReadSection(key string) (*CachedSection, bool) {
 	return &cs, true
 }
 
+// WriteSection records a section's rows so the next launch has something to draw
+// before the query returns.
 func (c *Cache) WriteSection(key string, issues []Issue, at time.Time) error {
 	b, err := json.Marshal(CachedSection{FetchedAt: at, Issues: issues})
 	if err != nil {
@@ -87,6 +95,9 @@ func (c *Cache) WriteSection(key string, issues []Issue, at time.Time) error {
 	return writeAtomic(c.sectionPath(key), b)
 }
 
+// ReadIssue returns a cached issue body, and false once it is older than ttl.
+// Unlike a section, a body has no visible age on screen, so the TTL is the only
+// thing keeping the preview honest.
 func (c *Cache) ReadIssue(key string, ttl time.Duration, now time.Time) (string, bool) {
 	path := c.issuePath(key)
 	st, err := os.Stat(path)
@@ -100,6 +111,8 @@ func (c *Cache) ReadIssue(key string, ttl time.Duration, now time.Time) (string,
 	return string(b), true
 }
 
+// WriteIssue records an issue body. Its modification time is the entry's age,
+// which is why nothing here writes a timestamp of its own.
 func (c *Cache) WriteIssue(key, markdown string) error {
 	return writeAtomic(c.issuePath(key), []byte(markdown))
 }

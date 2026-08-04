@@ -31,6 +31,8 @@ type IssueVars struct {
 	Dir string
 }
 
+// NewIssueVars is what a keybinding without prompt: true receives: the issue,
+// and an empty Prompt.
 func NewIssueVars(i Issue) IssueVars {
 	return NewAskVars(i, "")
 }

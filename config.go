@@ -17,6 +17,8 @@ const (
 	defaultPreviewPosition = "right"
 )
 
+// Config is the whole file, and the whole contract with the person who edits
+// it: every tab, key and colour the dashboard has comes from here.
 type Config struct {
 	Sections    []Section   `yaml:"jiraSections"`
 	Defaults    Defaults    `yaml:"defaults"`
@@ -34,6 +36,8 @@ type CreateKey struct {
 	Type string `yaml:"type"`
 }
 
+// Section is one tab. The JQL owns what the tab is; everything else here trims
+// or labels that result.
 type Section struct {
 	Title string `yaml:"title"`
 	JQL   string `yaml:"jql"`
@@ -51,6 +55,7 @@ type Section struct {
 	Dir string `yaml:"dir"`
 }
 
+// Defaults are what a section that says nothing gets.
 type Defaults struct {
 	Preview Preview `yaml:"preview"`
 	Limit   int     `yaml:"limit"`
@@ -58,18 +63,25 @@ type Defaults struct {
 	Dir string `yaml:"dir"`
 }
 
-// Open is a pointer so that an omitted key and an explicit `open: false` are
-// distinguishable: the default is open, and a plain bool cannot express that.
+// Preview is the pane beside the table. Open is a pointer so that an omitted key
+// and an explicit `open: false` are distinguishable: the default is open, and a
+// plain bool cannot express that.
 type Preview struct {
 	Open     *bool   `yaml:"open"`
 	Position string  `yaml:"position"`
 	Width    float64 `yaml:"width"`
 }
 
+// Keybindings groups the configured keys by what they act on. Only issue keys
+// exist so far, and the nesting is what leaves room for another scope without
+// renaming this one.
 type Keybindings struct {
 	Issues []Keybinding `yaml:"issues"`
 }
 
+// Keybinding is one configured key and the shell command it runs. The dashboard
+// itself never writes to Jira, so anything that changes an issue is one of
+// these.
 type Keybinding struct {
 	Key     string `yaml:"key"`
 	Command string `yaml:"command"`
@@ -82,10 +94,14 @@ type Keybinding struct {
 	Prompt bool `yaml:"prompt"`
 }
 
+// Theme is the colours the dashboard draws in. Every field is optional: an
+// unset colour falls back to the Dracula shade the layout was designed against.
 type Theme struct {
 	Colors Colors `yaml:"colors"`
 }
 
+// Colors names the four things on screen that carry colour. They are grouped
+// the way gh-dash groups its own theme, so a config can be moved across.
 type Colors struct {
 	Text struct {
 		Primary   string `yaml:"primary"`
@@ -160,9 +176,11 @@ func LoadConfig(path string) (*Config, error) {
 		// surface as whatever the command says about a directory it cannot enter,
 		// long after the file that is actually wrong was edited.
 		if dir != "" {
-			if info, err := os.Stat(dir); err != nil {
+			info, err := os.Stat(dir)
+			if err != nil {
 				return nil, fmt.Errorf("%s: section %q dir: %w", path, s.Title, err)
-			} else if !info.IsDir() {
+			}
+			if !info.IsDir() {
 				return nil, fmt.Errorf("%s: section %q dir is not a directory: %s", path, s.Title, dir)
 			}
 		}

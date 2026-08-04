@@ -74,19 +74,19 @@ keybindings:
       # which is honest but usually longer than the pane.
       name: open in browser
       command: open {{.IssueURL}}
-    #: 課題を Claude に渡して調査を始める（新しい tmux ウィンドウ）
+    #: 課題を Claude に渡して調査を始める（横に split）
     - key: R
       name: claude
       command: >-
-        tmux new-window -c {{.Dir}} -n {{.IssueKey}}
+        tmux split-window -h -c {{.Dir}}
         claude --permission-mode auto {{.IssueKey}}
 
-    #: 指示を打って Claude に渡す（課題・本文つき、新しい tmux ウィンドウ）
+    #: 指示を打って Claude に渡す（課題・本文つき、横に split）
     - key: a
       name: ask claude
       prompt: true
       command: >-
-        tmux new-window -c {{.Dir}} -n {{.IssueKey}}
+        tmux split-window -h -c {{.Dir}}
         claude --permission-mode auto {{.Prompt}}
 
 theme:

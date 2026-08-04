@@ -563,6 +563,9 @@ func renderPromptBox(m Model, title, keys string, width int) string {
 		Render(body)
 }
 
+// View draws the whole frame from the model alone, top to bottom: the tabs, the
+// table, the preview beside it, the prompt, the footer, and the help below it.
+// Nothing here fetches or mutates - what is not in the model cannot be drawn.
 func (m Model) View() string {
 	st := newStyles(m.cfg.Theme)
 	s := m.sections[m.active]

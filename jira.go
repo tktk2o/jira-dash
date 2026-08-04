@@ -49,6 +49,8 @@ func (t *JiraTime) UnmarshalJSON(b []byte) error {
 	return fmt.Errorf("unrecognised time %q", s)
 }
 
+// MarshalJSON writes RFC 3339, not the format Jira sent: what is marshalled is
+// the cache, and it is read back by this program alone.
 func (t JiraTime) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.Time)
 }
@@ -133,6 +135,8 @@ func (i Issue) InActiveSprintPrefix(prefix string) bool {
 	return false
 }
 
+// AssigneeName is the name to draw in a column, so an unassigned issue reads as
+// a dash rather than as an empty cell that looks like a rendering fault.
 func (i Issue) AssigneeName() string {
 	if i.Assignee == nil || *i.Assignee == "" {
 		return "-"
@@ -145,6 +149,9 @@ type searchEnvelope struct {
 	Results []Issue `json:"results"`
 }
 
+// ParseSearchJSON reads what `jira search -f json` prints: a total and the
+// results. Only the results are kept; the tab states how many rows it holds,
+// which is a fact this program can see for itself.
 func ParseSearchJSON(b []byte) ([]Issue, error) {
 	var env searchEnvelope
 	if err := json.Unmarshal(b, &env); err != nil {
@@ -189,6 +196,9 @@ func ParseCommentsJSON(b []byte) ([]Comment, error) {
 	return env.Comments, nil
 }
 
+// Comments reads an issue's thread. `comment list` is the subcommand, so the
+// key goes last - `jira comment ABC-1 list` would ask about an issue named
+// "list".
 func (c CLI) Comments(ctx context.Context, key string) ([]Comment, error) {
 	out, err := c.run(ctx, "comment", "list", key)
 	if err != nil {
@@ -227,6 +237,7 @@ type CLI struct {
 	Bin string
 }
 
+// Search runs a section's JQL.
 func (c CLI) Search(ctx context.Context, jql string, limit int) ([]Issue, error) {
 	out, err := c.run(ctx, "search", "--jql", jql, "-l", strconv.Itoa(limit), "-f", "json")
 	if err != nil {
@@ -235,6 +246,7 @@ func (c CLI) Search(ctx context.Context, jql string, limit int) ([]Issue, error)
 	return ParseSearchJSON(out)
 }
 
+// Create files a new issue. It is the one call in this program that writes.
 func (c CLI) Create(ctx context.Context, req NewIssueRequest) (Issue, error) {
 	out, err := c.run(ctx, CreateArgs(req)...)
 	if err != nil {

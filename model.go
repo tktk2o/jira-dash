@@ -90,6 +90,9 @@ type debounceMsg struct {
 	key string
 }
 
+// Model is the whole state of the dashboard, and Bubble Tea copies it by value
+// on every message. The fields it does not own - the config, the searcher, the
+// cache - are held as pointers or interfaces so that copy stays cheap.
 type Model struct {
 	cfg      *Config
 	searcher Searcher
@@ -150,6 +153,8 @@ func (m Model) anyLoading() bool {
 	return false
 }
 
+// NewModel builds the dashboard's initial state. now is injected so that every
+// age on screen is a pure function of the model in a test.
 func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 	m := Model{
 		cfg:         cfg,
@@ -177,6 +182,8 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 	return m
 }
 
+// Init fetches every section at once. The rows already seeded from cache are on
+// screen by then, so what these replace is visible rather than blank.
 func (m Model) Init() tea.Cmd {
 	// +1 for the spinner tick: every section starts out loading, so the
 	// animation has to be running from the first frame.
@@ -230,6 +237,8 @@ func (m Model) tableWidth() int {
 	return m.width - int(float64(m.width)*m.cfg.Defaults.Preview.Width)
 }
 
+// Update is the only place the model changes. Every case returns a new copy, so
+// a command that has already been handed a model can never see a later one.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:

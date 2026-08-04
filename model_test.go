@@ -235,7 +235,7 @@ func TestGotoTopAndBottom(t *testing.T) {
 
 	m = press(m, "G")
 	if m.sections[0].cursor != 2 {
-		t.Errorf("G should land on the last row, got %d", m.sections[0].cursor)
+		t.Errorf("cursor after G = %d, want 2 (the last of three rows)", m.sections[0].cursor)
 	}
 
 	m = press(m, "g")

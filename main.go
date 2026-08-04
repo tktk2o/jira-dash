@@ -1,5 +1,8 @@
-// jira-dash shows Jira issues the way gh dash shows pull requests: tabs of
+// Jira-dash shows Jira issues the way gh dash shows pull requests: tabs of
 // issues defined by JQL in a config file.
+//
+// The name is capitalised because it opens the sentence, which is the convention
+// for a command's doc comment; the binary itself is jira-dash.
 //
 // It is read-only. Anything that changes an issue runs through a configured
 // keybinding, so the dashboard itself can never write to Jira.
