@@ -240,10 +240,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
-	case "tab":
+	// h/l and the arrows are gh-dash's section keys; tab/shift+tab are kept
+	// because they are what the help line has always advertised.
+	case "tab", "l", "right":
 		m.active = (m.active + 1) % len(m.sections)
 		return m, m.selectionChanged()
-	case "shift+tab":
+	case "shift+tab", "h", "left":
 		m.active = (m.active - 1 + len(m.sections)) % len(m.sections)
 		return m, m.selectionChanged()
 	case "j", "down":

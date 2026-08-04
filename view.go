@@ -130,7 +130,7 @@ func renderFooter(m Model) string {
 
 func renderHelp() string {
 	return strings.Join([]string{
-		"tab/shift+tab  switch section",
+		"h/l ←/→ tab    switch section",
 		"j/k gg/G       move",
 		"p              toggle preview",
 		"/              filter (esc clears)",

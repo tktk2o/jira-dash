@@ -152,6 +152,35 @@ func TestTabSwitchesSections(t *testing.T) {
 	}
 }
 
+// gh-dash switches sections with h/l and the arrows, and this dashboard is
+// meant to feel like it. Only tab/shift+tab were bound, so reaching for l did
+// nothing and the sections looked stuck.
+func TestSectionSwitchesOnHLAndArrows(t *testing.T) {
+	forward := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'l'}},
+		{Type: tea.KeyRight},
+	}
+	back := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'h'}},
+		{Type: tea.KeyLeft},
+	}
+
+	for i, key := range forward {
+		m := newTestModel(t, fakeSearcher{})
+		next, _ := m.Update(key)
+		if got := next.(Model).active; got != 1 {
+			t.Errorf("forward key %d: active = %d, want 1", i, got)
+		}
+	}
+	for i, key := range back {
+		m := newTestModel(t, fakeSearcher{})
+		next, _ := m.Update(key)
+		if got := next.(Model).active; got != 1 {
+			t.Errorf("back key %d should wrap to the last section: active = %d, want 1", i, got)
+		}
+	}
+}
+
 func TestCursorMovesAndClamps(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: time.Now()})
