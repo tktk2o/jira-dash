@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -51,15 +52,38 @@ func TestCurrentDebounceTickLoadsTheIssue(t *testing.T) {
 		t.Fatal("the current tick should trigger a load")
 	}
 
-	msg, ok := cmd().(issueLoadedMsg)
+	// The tick fires both halves of the pane: the body and the comments are
+	// separate CLI subcommands.
+	batch, ok := cmd().(tea.BatchMsg)
 	if !ok {
-		t.Fatalf("got %T, want issueLoadedMsg", cmd())
+		t.Fatalf("got %T, want a batch of the two loads", cmd())
 	}
-	if msg.err != nil {
-		t.Fatalf("unexpected error: %v", msg.err)
+	if len(batch) != 2 {
+		t.Fatalf("batch has %d commands, want 2", len(batch))
 	}
-	if !strings.Contains(msg.markdown, "ABC-1") {
-		t.Errorf("markdown = %q", msg.markdown)
+
+	var sawBody, sawComments bool
+	for _, c := range batch {
+		switch msg := c().(type) {
+		case issueLoadedMsg:
+			if msg.err != nil {
+				t.Fatalf("unexpected error: %v", msg.err)
+			}
+			if !strings.Contains(msg.markdown, "ABC-1") {
+				t.Errorf("markdown = %q", msg.markdown)
+			}
+			sawBody = true
+		case commentsLoadedMsg:
+			if msg.err != nil {
+				t.Fatalf("unexpected error: %v", msg.err)
+			}
+			sawComments = true
+		default:
+			t.Errorf("unexpected message %T", msg)
+		}
+	}
+	if !sawBody || !sawComments {
+		t.Errorf("body loaded: %v, comments loaded: %v; want both", sawBody, sawComments)
 	}
 }
 
@@ -123,5 +147,227 @@ func TestRenderMarkdownFallsBackToPlainText(t *testing.T) {
 	}
 	if got := renderMarkdown("plain", 0); got == "" {
 		t.Error("a zero width must not produce empty output")
+	}
+}
+
+// The preview used to be raw `jira get` markdown. The header answers "what am I
+// looking at" from data the search already returned, so it costs no extra call.
+func TestPreviewHeaderCarriesTheIssueAtAGlance(t *testing.T) {
+	issue := Issue{
+		Key: "ABC-1234", Summary: "トークン更新で 500 が出る", Type: "Story",
+		Status: "In Progress", Priority: "High", StoryPoints: fptr(3),
+		Labels: []string{"backend", "urgent"},
+		Sprint: []Sprint{{ID: 1, Name: "Team 0803-0807", State: "active"}},
+	}
+	issue.Assignee = ptr("琢人 加藤")
+	issue.Project.Key = "ABC"
+	issue.Updated.Time = time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+
+	out := renderPreviewHeader(issue, fixedNow()(), 90)
+
+	for _, want := range []string{
+		"ABC-1234", "ABC", "トークン更新で 500 が出る",
+		"In Progress", "High", "3", "琢人 加藤", "2h", "Team 0803-0807",
+		"backend", "urgent",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("header missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Labels are chips, so an issue with none must not leave an empty frame behind.
+func TestPreviewHeaderOmitsAnEmptyLabelRow(t *testing.T) {
+	out := renderPreviewHeader(Issue{Key: "ABC-1"}, fixedNow()(), 90)
+	if strings.Contains(out, "[]") || strings.Contains(out, "labels") {
+		t.Errorf("no label row should be drawn when there are none:\n%s", out)
+	}
+}
+
+func TestRenderCommentsShowsAuthorAgeAndBody(t *testing.T) {
+	now := fixedNow()()
+	comments := []Comment{
+		{Author: "甲", Body: "割付後は対象外にはできないようにする"},
+		{Author: "乙", Body: "対応済み"},
+	}
+	comments[0].Created.Time = now.Add(-48 * time.Hour)
+	comments[1].Created.Time = now.Add(-1 * time.Hour)
+
+	out := renderComments(comments, now, 80)
+
+	for _, want := range []string{"甲", "2d", "割付後は対象外", "乙", "1h", "対応済み"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("comments missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// Saying "no comments" is information; a blank gap is not.
+func TestRenderCommentsSaysWhenThereAreNone(t *testing.T) {
+	if out := renderComments(nil, fixedNow()(), 80); !strings.Contains(out, "no comments") {
+		t.Errorf("out = %q", out)
+	}
+}
+
+// The pane is assembled from three sources that arrive at different times: the
+// header from the search (already in hand), the body from `jira get`, and the
+// comments from `jira comment list`. Each has to appear as it lands.
+func TestPreviewAssemblesHeaderBodyAndComments(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	// Header alone, before either call comes back.
+	if !strings.Contains(m.detail.View(), "ABC-1") {
+		t.Errorf("the header should be on screen immediately: %q", m.detail.View())
+	}
+
+	next, _ = m.Update(issueLoadedMsg{key: "ABC-1", markdown: "the description body"})
+	m = next.(Model)
+	next, _ = m.Update(commentsLoadedMsg{key: "ABC-1", comments: []Comment{{Author: "甲", Body: "a remark"}}})
+	m = next.(Model)
+
+	out := plain(m.detail.View())
+	for _, want := range []string{"ABC-1", "description body", "甲", "a remark"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preview missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A reply for a row the cursor has already left must not overwrite the pane.
+func TestPreviewIgnoresACommentsReplyForAnotherIssue(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	next, _ = m.Update(commentsLoadedMsg{key: "OTHER-9", comments: []Comment{{Author: "乙", Body: "stale"}}})
+	m = next.(Model)
+
+	if strings.Contains(m.detail.View(), "stale") {
+		t.Errorf("a stale reply should be dropped: %q", m.detail.View())
+	}
+}
+
+// Moving the cursor must not leave the previous issue's body under the new
+// header.
+func TestPreviewClearsTheBodyWhenTheSelectionMoves(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+	next, _ = m.Update(issueLoadedMsg{key: "ABC-1", markdown: "body of the first issue"})
+	m = next.(Model)
+
+	m = press(m, "j")
+
+	if strings.Contains(m.detail.View(), "body of the first issue") {
+		t.Errorf("the old body should be gone: %q", m.detail.View())
+	}
+	if !strings.Contains(m.detail.View(), "ABC-2") {
+		t.Errorf("the new header should be there: %q", m.detail.View())
+	}
+}
+
+// Rows arriving is a selection change: the cursor points at an issue it did not
+// point at before. Without that, the preview stayed empty until the first
+// keypress - which is how it actually behaved.
+func TestPreviewFillsWhenRowsFirstArrive(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+
+	next, cmd := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = next.(Model)
+
+	if cmd == nil {
+		t.Error("arriving rows should arm the detail load")
+	}
+	if m.detailKey != "ABC-1" {
+		t.Errorf("detailKey = %q, want ABC-1", m.detailKey)
+	}
+	if !strings.Contains(m.detail.View(), "ABC-1") {
+		t.Errorf("the header should be on screen without a keypress: %q", m.detail.View())
+	}
+}
+
+// A section that is not on screen must not hijack the preview.
+func TestPreviewIgnoresRowsForAnInactiveSection(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 1, issues: issues("ZZZ-9"), at: fixedNow()()})
+	m = next.(Model)
+
+	if m.detailKey == "ZZZ-9" {
+		t.Error("an inactive section's rows should not take over the preview")
+	}
+}
+
+// plain strips the ANSI escapes glamour paints the body with. It colours each
+// word separately, so a two-word phrase has escape sequences inside it and a
+// plain Contains would miss text that is on screen.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func plain(s string) string { return ansi.ReplaceAllString(s, "") }
+
+// Comments sit below a long description, so without a way to scroll the pane
+// they are unreachable - which made fetching them pointless.
+func TestPreviewScrolls(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+	next, _ = m.Update(issueLoadedMsg{
+		key: "ABC-1", markdown: strings.Repeat("a line of the description\n\n", 60),
+	})
+	m = next.(Model)
+
+	if m.detail.YOffset != 0 {
+		t.Fatalf("the pane should start at the top, got offset %d", m.detail.YOffset)
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = next.(Model)
+	scrolled := m.detail.YOffset
+	if scrolled == 0 {
+		t.Fatal("ctrl+d should scroll the preview down")
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = next.(Model)
+	if m.detail.YOffset >= scrolled {
+		t.Errorf("ctrl+u should scroll back up: %d then %d", scrolled, m.detail.YOffset)
+	}
+}
+
+// Scrolling must not move the row cursor: the pane and the table are separate
+// places, and losing your row to read a comment would be maddening.
+func TestPreviewScrollLeavesTheCursorAlone(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+	m = press(m, "j")
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = next.(Model)
+
+	if m.sections[0].cursor != 1 {
+		t.Errorf("cursor = %d, want it left at 1", m.sections[0].cursor)
+	}
+}
+
+// A new issue has to open at the top. The viewport keeps its offset across a
+// SetContent, so without a reset the next issue opens scrolled to wherever the
+// last one was left.
+func TestPreviewReturnsToTheTopOnANewSelection(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+	next, _ = m.Update(issueLoadedMsg{
+		key: "ABC-1", markdown: strings.Repeat("a line of the description\n\n", 60),
+	})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = next.(Model)
+
+	m = press(m, "j")
+
+	if m.detail.YOffset != 0 {
+		t.Errorf("offset = %d, want the new issue to open at the top", m.detail.YOffset)
 	}
 }

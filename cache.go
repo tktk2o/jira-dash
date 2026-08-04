@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,21 @@ import (
 // launch, but a description is re-read often enough that re-fetching it on
 // each cursor pass would waste a 360ms CLI start for nothing.
 const issueTTL = 10 * time.Minute
+
+// cacheVersion namespaces every cached file. What is cached has a shape, and
+// that shape changes: the issue body went from the CLI's markdown to the
+// description alone, and Issue gained priority, labels and sprint. Without this
+// an upgraded binary keeps serving the old shape - a preview repeating metadata
+// for the whole TTL, or rows rendering a dash for fields the old entry never
+// held. Bump it whenever Issue or the body format changes.
+const cacheVersion = "v2"
+
+// safeKey keeps a key from escaping the cache directory. Keys are issue keys and
+// hashes today, but an issue key comes from Jira, and a path separator in one
+// would otherwise write wherever it pointed.
+func safeKey(key string) string {
+	return strings.NewReplacer("/", "_", `\`, "_", "..", "_").Replace(key)
+}
 
 type Cache struct {
 	dir string
@@ -37,11 +53,11 @@ type CachedSection struct {
 }
 
 func (c *Cache) sectionPath(key string) string {
-	return filepath.Join(c.dir, "sections", key+".json")
+	return filepath.Join(c.dir, cacheVersion, "sections", safeKey(key)+".json")
 }
 
 func (c *Cache) issuePath(key string) string {
-	return filepath.Join(c.dir, "issues", key+".md")
+	return filepath.Join(c.dir, cacheVersion, "issues", safeKey(key)+".md")
 }
 
 // ReadSection treats every failure as a miss. The cache is pure derived data,

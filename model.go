@@ -69,6 +69,15 @@ type fetchedMsg struct {
 	err    error
 }
 
+// commentsLoadedMsg carries the reply from `jira comment list`. It is its own
+// type, and carries its key, so a reply that arrives after the cursor moved can
+// be recognised as stale.
+type commentsLoadedMsg struct {
+	key      string
+	comments []Comment
+	err      error
+}
+
 type issueLoadedMsg struct {
 	key      string
 	markdown string
@@ -94,6 +103,11 @@ type Model struct {
 	detail        viewport.Model
 	detailKey     string
 	detailSeq     int
+
+	// The two halves of the pane that need a call. Held apart from the viewport
+	// so an arrival can re-render the whole pane from what is known so far.
+	detailBody     string
+	detailComments []Comment
 
 	filtering   bool
 	filterDraft string
@@ -187,15 +201,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case fetchedMsg:
-		return m.applyFetched(msg), nil
+		m = m.applyFetched(msg)
+		// Rows landing in the section you are looking at is a selection change:
+		// the cursor now points at an issue it did not point at before. Without
+		// this the preview stayed empty until the first keypress.
+		if msg.idx == m.active {
+			return m, m.selectionChanged()
+		}
+		return m, nil
 
 	case issueLoadedMsg:
 		if msg.err != nil {
 			m.status = msg.err.Error()
 			return m, nil
 		}
+		// A reply for a row the cursor has already left must not overwrite the
+		// pane with another issue's text.
 		if msg.key != "" && msg.key == m.detailKey {
-			m.detail.SetContent(renderMarkdown(msg.markdown, m.detail.Width))
+			m.detailBody = msg.markdown
+			m.refreshDetail(false)
+		}
+		return m, nil
+
+	case commentsLoadedMsg:
+		if msg.err != nil {
+			m.status = msg.err.Error()
+			return m, nil
+		}
+		if msg.key != "" && msg.key == m.detailKey {
+			m.detailComments = msg.comments
+			m.refreshDetail(false)
 		}
 		return m, nil
 
@@ -231,7 +266,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.detailSeq {
 			return m, nil
 		}
-		return m, m.loadIssue(msg.key)
+		return m, tea.Batch(m.loadIssue(msg.key), m.loadComments(msg.key))
 
 	case copiedMsg:
 		if msg.err != nil {
@@ -327,6 +362,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.selectionChanged()
 	case "p":
 		m.previewOpen = !m.previewOpen
+		return m, nil
+	// The preview scrolls on its own keys, not j/k: the table and the pane are
+	// separate places, and comments sit below a long description, so without
+	// these they were unreachable. The row cursor is deliberately untouched.
+	case "ctrl+d":
+		m.detail.HalfViewDown()
+		return m, nil
+	case "ctrl+u":
+		m.detail.HalfViewUp()
 		return m, nil
 	case "/":
 		m.filtering = true

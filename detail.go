@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,16 +24,79 @@ func (m *Model) selectionChanged() tea.Cmd {
 	issue, ok := m.sections[m.active].selected()
 	if !ok {
 		m.detailKey = ""
+		m.detailBody = ""
+		m.detailComments = nil
 		m.detail.SetContent("")
 		return nil
 	}
 
 	m.detailSeq++
 	m.detailKey = issue.Key
+	// The body and comments belong to the row we just left; keeping them would
+	// put another issue's text under this issue's header.
+	m.detailBody = ""
+	m.detailComments = nil
+	// The header needs no call, so the pane is never blank while the two
+	// fetches are in flight.
+	m.refreshDetail(true)
+
 	seq, key := m.detailSeq, issue.Key
 	return tea.Tick(detailDebounce, func(time.Time) tea.Msg {
 		return debounceMsg{seq: seq, key: key}
 	})
+}
+
+// refreshDetail rebuilds the pane from whatever has arrived so far. Three
+// sources land at different times - the header came with the search, the body
+// from `jira get`, the comments from `jira comment list` - so every arrival
+// re-renders the whole pane rather than appending to it.
+func (m *Model) refreshDetail(reset bool) {
+	issue, ok := m.sections[m.active].selected()
+	if !ok {
+		m.detail.SetContent("")
+		return
+	}
+
+	width := m.detail.Width
+	parts := []string{renderPreviewHeader(issue, m.now(), width), rule(width)}
+	if m.detailBody == "" {
+		parts = append(parts, "loading...")
+	} else {
+		parts = append(parts, strings.TrimSpace(renderMarkdown(m.detailBody, width)))
+	}
+	parts = append(parts,
+		rule(width),
+		"COMMENTS",
+		"",
+		renderComments(m.detailComments, m.now(), width),
+	)
+	m.detail.SetContent(strings.Join(parts, "\n"))
+	if reset {
+		// The viewport keeps its offset across a SetContent, so a new issue would
+		// otherwise open scrolled to wherever the last one was left.
+		m.detail.GotoTop()
+	}
+}
+
+func rule(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return strings.Repeat("─", width)
+}
+
+// loadComments is its own call because `jira comment list` is a separate
+// subcommand - another ~360ms. It is not cached: a comment thread is the part of
+// an issue most likely to have changed since you last looked.
+func (m Model) loadComments(key string) tea.Cmd {
+	searcher := m.searcher
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+
+		comments, err := searcher.Comments(ctx, key)
+		return commentsLoadedMsg{key: key, comments: comments, err: err}
+	}
 }
 
 // loadIssue returns the body from cache when it is fresh, and otherwise asks
@@ -54,6 +118,71 @@ func (m Model) loadIssue(key string) tea.Cmd {
 		_ = cache.WriteIssue(key, md)
 		return issueLoadedMsg{key: key, markdown: md}
 	}
+}
+
+// renderPreviewHeader answers "what am I looking at" without waiting for the
+// body: every field here came back with the search, so it costs no extra call
+// and is on screen the moment the cursor lands.
+//
+// Laid out like gh-dash's preview: identity, title, a meta line of dot-separated
+// facts, then labels as chips.
+func renderPreviewHeader(i Issue, now time.Time, width int) string {
+	lines := []string{
+		Truncate(i.Key+"  ·  "+orDefault(i.Project.Key, "-"), width),
+		"",
+		Truncate(i.Summary, width),
+		"",
+	}
+
+	// Only facts Jira actually gave: an empty one would read as "unknown" where
+	// the field is simply not part of this issue's workflow.
+	meta := []string{TypeIcon(i.Type) + " " + orDefault(i.Type, "-"), orDefault(i.Status, "-")}
+	if i.StoryPoints != nil {
+		meta = append(meta, StoryPointText(i.StoryPoints)+" SP")
+	}
+	if i.Priority != "" {
+		meta = append(meta, i.Priority)
+	}
+	meta = append(meta, i.AssigneeName())
+	if !i.Updated.IsZero() {
+		meta = append(meta, RelTime(now, i.Updated.Time)+" ago")
+	}
+	if sprint, ok := i.CurrentSprint(); ok {
+		meta = append(meta, sprint.Name)
+	}
+	lines = append(lines, Truncate(strings.Join(meta, " ⋅ "), width))
+
+	if len(i.Labels) > 0 {
+		chips := make([]string, 0, len(i.Labels))
+		for _, l := range i.Labels {
+			chips = append(chips, "["+l+"]")
+		}
+		lines = append(lines, Truncate(strings.Join(chips, " "), width))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderComments is where an issue's history of decisions lives, which is
+// usually the reason for opening it at all.
+func renderComments(comments []Comment, now time.Time, width int) string {
+	if len(comments) == 0 {
+		return "no comments"
+	}
+	out := make([]string, 0, len(comments)*3)
+	for _, c := range comments {
+		age := "-"
+		if !c.Created.IsZero() {
+			age = RelTime(now, c.Created.Time)
+		}
+		out = append(out,
+			Truncate(orDefault(c.Author, "-")+" ⋅ "+age, width),
+			// The body is left to the markdown renderer downstream; wrapping it
+			// here would fight with it.
+			c.Body,
+			"")
+	}
+	return strings.Join(out, "\n")
 }
 
 // renderMarkdown styles the body, falling back to the raw text when glamour

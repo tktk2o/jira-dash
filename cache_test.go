@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,11 +95,40 @@ func TestCacheWriteLeavesNoTempFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := os.ReadDir(filepath.Join(dir, "sections"))
+	entries, err := os.ReadDir(filepath.Join(dir, cacheVersion, "sections"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 || entries[0].Name() != "k.json" {
 		t.Errorf("want exactly k.json, got %v", entries)
+	}
+}
+
+// What is cached has a shape, and that shape changes: the issue body went from
+// the CLI's markdown (which repeated metadata) to the description alone, and
+// Issue gained priority, labels and sprint. Without a version in the path, an
+// upgraded binary keeps serving the old shape until the TTL expires - which is
+// exactly what happened, with a preview showing metadata twice for ten minutes.
+func TestCachePathsAreVersioned(t *testing.T) {
+	c := NewCache(t.TempDir())
+
+	for name, path := range map[string]string{
+		"section": c.sectionPath("abc123"),
+		"issue":   c.issuePath("ABC-1"),
+	} {
+		if !strings.Contains(path, cacheVersion) {
+			t.Errorf("%s path %q does not carry the cache version %q", name, path, cacheVersion)
+		}
+	}
+}
+
+// A key with a slash in it must not be able to write outside the cache dir.
+func TestCachePathsRejectAKeyWithSeparators(t *testing.T) {
+	c := NewCache("/tmp/jira-dash-test-cache")
+
+	for _, path := range []string{c.issuePath("../../etc/passwd"), c.sectionPath("../escape")} {
+		if !strings.HasPrefix(filepath.Clean(path), "/tmp/jira-dash-test-cache/") {
+			t.Errorf("path escapes the cache directory: %q", path)
+		}
 	}
 }

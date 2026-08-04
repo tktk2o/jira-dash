@@ -96,10 +96,10 @@ func TestRenderRowWidthIsIndependentOfScript(t *testing.T) {
 	ascii := Issue{Key: "ABC-1", Summary: "plain summary", Status: "Open", Type: "Task"}
 	japanese := Issue{Key: "ABC-2", Summary: "日本語の要約です", Status: "Open", Type: "Task"}
 
-	a := runewidth.StringWidth(renderRow(ascii, 100, now))
-	b := runewidth.StringWidth(renderRow(japanese, 100, now))
+	a := runewidth.StringWidth(metaLineOf(renderRow(ascii, 100, now)))
+	b := runewidth.StringWidth(metaLineOf(renderRow(japanese, 100, now)))
 	if a != b {
-		t.Errorf("row widths differ: ascii %d vs japanese %d", a, b)
+		t.Errorf("meta line widths differ: ascii %d vs japanese %d", a, b)
 	}
 }
 
@@ -110,9 +110,13 @@ func TestRenderRowNeverExceedsItsWidth(t *testing.T) {
 	now := time.Now()
 	issue := Issue{Key: "ABC-1234", Summary: strings.Repeat("長い要約", 40), Status: "In Progress", Type: "Bug"}
 
+	// Measured per line: a row is two of them, so the whole string is naturally
+	// wider than the pane.
 	for _, width := range []int{120, 100, 60, 45, 40, 20, 5} {
-		if got := runewidth.StringWidth(renderRow(issue, width, now)); got > width {
-			t.Errorf("renderRow at width %d rendered %d cells", width, got)
+		for i, line := range strings.Split(renderRow(issue, width, now), "\n") {
+			if got := runewidth.StringWidth(line); got > width {
+				t.Errorf("renderRow at width %d: line %d rendered %d cells", width, i, got)
+			}
 		}
 	}
 }
@@ -298,3 +302,134 @@ func TestEmptySectionSaysLoadingWhileFetching(t *testing.T) {
 		t.Errorf("a settled empty section should say so: %q", out)
 	}
 }
+
+// gh-dash puts a count on every tab, not just the one you are on: with four
+// sections fetching at once, the counts are how you see what arrived.
+func TestEveryTabCarriesItsCount(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("A-1", "A-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+	next, _ = m.Update(fetchedMsg{idx: 1, issues: issues("B-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	out := renderTabs(m)
+	if !strings.Contains(out, "Mine (2)") {
+		t.Errorf("active tab should show its count: %q", out)
+	}
+	if !strings.Contains(out, "Sprint (1)") {
+		t.Errorf("an inactive tab should show its count too: %q", out)
+	}
+}
+
+// The JQL is what a section *is*, and it is otherwise invisible: two tabs can
+// look alike and query completely different things.
+func TestQueryBoxShowsTheJQLAndThePrefix(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	m.sections[0].cfg.SprintPrefix = "Team"
+
+	box := renderQueryBox(m, 120)
+
+	if !strings.Contains(box, "assignee = currentUser()") {
+		t.Errorf("box should carry the JQL: %q", box)
+	}
+	if !strings.Contains(box, "Team") {
+		t.Errorf("box should carry the sprint prefix, which narrows the JQL: %q", box)
+	}
+	if !strings.Contains(box, "╭") || !strings.Contains(box, "╰") {
+		t.Errorf("box should be framed: %q", box)
+	}
+}
+
+// A long JQL must not widen the box past the pane it was measured for.
+func TestQueryBoxNeverExceedsItsWidth(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	m.sections[0].cfg.JQL = strings.Repeat("project = ABCDEF AND ", 20)
+
+	for _, w := range []int{40, 80, 120} {
+		for _, line := range strings.Split(renderQueryBox(m, w), "\n") {
+			if got := runewidth.StringWidth(line); got > w {
+				t.Errorf("width %d: line is %d cells: %q", w, got, line)
+			}
+		}
+	}
+}
+
+// The header names the columns the row lays out, so it has to use the same
+// widths - otherwise it is worse than nothing.
+func TestColumnHeaderAlignsWithTheRow(t *testing.T) {
+	header := renderColumnHeader(120)
+	if got := runewidth.StringWidth(header); got > 120 {
+		t.Errorf("header is %d cells, want at most 120", got)
+	}
+	if !strings.Contains(header, "KEY") || !strings.Contains(header, "STATUS") {
+		t.Errorf("header should name its columns: %q", header)
+	}
+}
+
+// A row is two lines like gh-dash's: everything that fits a column on the meta
+// line, and the summary on its own line where it is not competing for width.
+// That is the point - a Japanese summary was being cut at ~60 cells before.
+func TestRenderRowIsTwoLinesWithTheSummaryOnItsOwn(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	issue := Issue{
+		Key: "ABC-1234", Type: "Story", Status: "In Progress",
+		Summary:  "トークン更新で 500 が出る問題の調査と暫定対処までを含む長いタイトル",
+		Priority: "High", StoryPoints: fptr(3),
+	}
+	issue.Assignee = ptr("琢人 加藤")
+	issue.Updated.Time = now.Add(-2 * time.Hour)
+
+	lines := strings.Split(renderRow(issue, 100, now), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2: %q", len(lines), lines)
+	}
+
+	meta := lines[0]
+	for _, want := range []string{"ABC-1234", "In Progress", "2h", "High", "3", "加藤"} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("meta line missing %q: %q", want, meta)
+		}
+	}
+	if !strings.Contains(lines[1], "暫定対処までを含む長いタイトル") {
+		t.Errorf("the summary should survive uncut on its own line: %q", lines[1])
+	}
+	for i, line := range lines {
+		if got := runewidth.StringWidth(line); got > 100 {
+			t.Errorf("line %d is %d cells, want at most 100", i, got)
+		}
+	}
+}
+
+// Story points and priority are often unset, and "0SP" or an empty gap reads as
+// data. An absent value is a dash, like the assignee already was.
+func TestRenderRowMarksAbsentFieldsWithADash(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	meta := strings.Split(renderRow(Issue{Key: "ABC-1"}, 100, now), "\n")[0]
+
+	if strings.Contains(meta, "0") {
+		t.Errorf("an unset story point count must not render as 0: %q", meta)
+	}
+	if strings.Count(meta, "-") < 2 {
+		t.Errorf("unset priority and story points should both show a dash: %q", meta)
+	}
+}
+
+// The separator between rows is what makes two-line rows readable; without it
+// the meta line of the next issue reads as part of the previous summary.
+func TestViewSeparatesTwoLineRows(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("A-1", "A-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	if !strings.Contains(m.View(), "─") {
+		t.Errorf("rows should be separated by a rule: %q", m.View())
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+func fptr(f float64) *float64 { return &f }
+
+// metaLineOf takes the first of a row's two lines: the one whose columns have to
+// line up between rows.
+func metaLineOf(row string) string { return strings.Split(row, "\n")[0] }

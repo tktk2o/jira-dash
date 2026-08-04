@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,19 +16,30 @@ import (
 // Column widths. Only the summary grows; the rest are fixed so the columns
 // line up between rows and between sections.
 const (
-	colKey     = 10
-	colIcon    = 3
-	colStatus  = 13
-	colUpdated = 5
-	colGaps    = 4 // single spaces between the five columns
+	colKey      = 10
+	colIcon     = 3
+	colStatus   = 13
+	colPoints   = 3
+	colPriority = 7
+	colAssignee = 10
+	colUpdated  = 5
+	colGaps     = 6 // single spaces between the seven columns
+
+	// The whole meta line. Named so the column header and the row cannot drift
+	// apart: a header that does not line up with its rows is worse than none.
+	rowFixedWidth = colKey + colIcon + colStatus + colPoints +
+		colPriority + colAssignee + colUpdated + colGaps
 
 	// "→ " / "  " drawn by View in front of every row.
 	cursorMarkerWidth = 2
 
 	// Chrome around the preview viewport, which it does not draw itself.
-	borderChrome   = 2 // the rounded border, both edges of one axis
-	paneGap        = 1 // the space View puts between table and preview
-	verticalChrome = 3 // tab strip, footer, filter line
+	borderChrome = 2 // the rounded border, both edges of one axis
+	paneGap      = 1 // the space View puts between table and preview
+	// Lines View spends on chrome above and below the table: the tab strip, the
+	// rule under it, the three-line query box, the column header, the footer and
+	// the prompt line.
+	verticalChrome = 8
 )
 
 type styles struct {
@@ -88,14 +100,55 @@ func renderTabs(m Model) string {
 		if s.loading {
 			label = m.spinner.View() + " " + label
 		}
+		// Every tab carries its count, not just the active one: with several
+		// sections fetching at once, the counts are how you see what arrived.
+		label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
 		if i == m.active {
-			label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
 			parts = append(parts, st.activeTab.Render(label))
 			continue
 		}
 		parts = append(parts, st.inactiveTab.Render(label))
 	}
 	return strings.Join(parts, "│")
+}
+
+// renderQueryBox shows what the section actually asks Jira for. Two tabs can
+// look alike and query entirely different things, and sprintPrefix narrows the
+// result after the query, so it belongs here too or the row count looks wrong
+// for the JQL beside it.
+//
+// The JQL is folded onto one line: a config may write it across several lines
+// with YAML's >- and the newlines would break the frame.
+func renderQueryBox(m Model, width int) string {
+	sec := m.sections[m.active].cfg
+	query := strings.Join(strings.Fields(sec.JQL), " ")
+	if sec.SprintPrefix != "" {
+		query += "  ·  sprint ^ " + sec.SprintPrefix
+	}
+
+	// 2 for the frame's own columns, 2 for the padding inside it.
+	inner := maxInt(0, width-4)
+	st := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4"))).
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		Width(inner)
+	return st.Render(Truncate(query, inner))
+}
+
+// renderColumnHeader labels the columns renderRow lays out, using the same
+// widths - a header that does not line up with its rows is worse than none.
+func renderColumnHeader(width int) string {
+	header := strings.Join([]string{
+		runewidth.FillRight("KEY", colKey),
+		runewidth.FillRight("T", colIcon),
+		runewidth.FillRight("STATUS", colStatus),
+		runewidth.FillLeft("SP", colPoints),
+		runewidth.FillRight("PRIO", colPriority),
+		runewidth.FillRight("ASSIGNEE", colAssignee),
+		runewidth.FillLeft("AGE", colUpdated),
+	}, " ")
+	return Truncate(header, width)
 }
 
 // renderRow lays out one issue. The summary takes whatever is left, so a
@@ -105,23 +158,35 @@ func renderTabs(m Model) string {
 // Japanese summary would end up the wrong number of cells wide and the columns
 // would stop lining up between rows.
 func renderRow(i Issue, width int, now time.Time) string {
-	summaryWidth := width - colKey - colIcon - colStatus - colUpdated - colGaps
-	if summaryWidth < 0 {
-		summaryWidth = 0
-	}
-	row := strings.Join([]string{
+	meta := strings.Join([]string{
 		runewidth.FillRight(Truncate(i.Key, colKey), colKey),
 		runewidth.FillRight(TypeIcon(i.Type), colIcon),
-		runewidth.FillRight(Truncate(i.Summary, summaryWidth), summaryWidth),
 		runewidth.FillRight(Truncate(i.Status, colStatus), colStatus),
+		runewidth.FillLeft(StoryPointText(i.StoryPoints), colPoints),
+		runewidth.FillRight(Truncate(orDefault(i.Priority, "-"), colPriority), colPriority),
+		runewidth.FillRight(Truncate(i.AssigneeName(), colAssignee), colAssignee),
 		runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated),
 	}, " ")
 
-	// The fixed columns alone are 35 cells, so a very narrow terminal cannot
-	// fit them. Cutting the assembled row keeps the invariant that a row never
-	// draws wider than the width it was handed - without it the table spills
-	// past the pane and the preview beside it gets pushed off screen.
-	return Truncate(row, width)
+	// The summary is indented under the meta line so the eye can tell the two
+	// apart at a glance, the way gh-dash indents a PR title under its metadata.
+	summary := "  " + Truncate(i.Summary, maxInt(0, width-2))
+
+	// The meta columns alone are 50 cells, so a very narrow terminal cannot fit
+	// them. Cutting each line keeps the invariant that a row never draws wider
+	// than the width it was handed - without it the table spills past the pane
+	// and the preview beside it gets pushed off screen.
+	return Truncate(meta, width) + "\n" + Truncate(summary, width)
+}
+
+// StoryPointText keeps "unestimated" distinct from a real estimate. Rendering
+// an absent value as 0 would state a number Jira never gave, and most issues
+// are unestimated. Whole numbers lose the ".0": 3 points, not 3.0.
+func StoryPointText(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(*p, 'f', -1, 64)
 }
 
 func renderFooter(m Model) string {
@@ -153,6 +218,7 @@ func renderHelp() string {
 		"h/l ←/→ tab    switch section",
 		"j/k gg/G       move",
 		"p              toggle preview",
+		"ctrl+d/ctrl+u  scroll the preview",
 		"/              filter (esc clears)",
 		"r              refresh section",
 		"y/Y            copy key / url",
@@ -197,13 +263,28 @@ func (m Model) View() string {
 	// the row's budget or every line would be two cells wider than the pane it
 	// was measured for.
 	rowWidth := tableWidth - cursorMarkerWidth
+	rule := st.footer.Render(" " + strings.Repeat("─", maxInt(0, tableWidth-1)))
 	for idx, issue := range s.visible() {
-		line := renderRow(issue, rowWidth, now)
+		// The arrow marks the row once, on its first line; the fill is what
+		// carries the selection across both. Repeating the arrow on the summary
+		// line read as a second, pointless pointer.
+		style := st.row
+		marker := "  "
 		if idx == s.cursor {
-			rows = append(rows, st.selectedRow.Render("→ "+line))
-			continue
+			style, marker = st.selectedRow, "→ "
 		}
-		rows = append(rows, st.row.Render("  "+line))
+		for i, line := range strings.Split(renderRow(issue, rowWidth, now), "\n") {
+			prefix := marker
+			if i > 0 {
+				prefix = strings.Repeat(" ", cursorMarkerWidth)
+			}
+			rows = append(rows, style.Render(prefix+line))
+		}
+		// A rule between rows, not after the last one: with two-line rows the
+		// next issue's meta line otherwise reads as part of this summary.
+		if idx < len(s.visible())-1 {
+			rows = append(rows, rule)
+		}
 	}
 	if len(rows) == 0 {
 		// "(no issues)" and "loading" are different facts, and during a refresh
@@ -237,7 +318,17 @@ func (m Model) View() string {
 		prompting = false
 	}
 
-	sections := []string{renderTabs(m), body}
+	// The chrome above the table, in the order gh-dash stacks it: tabs, a rule
+	// across the whole width, the query the tab is showing, then the column
+	// names. verticalChrome has to match how many lines this adds, or the
+	// preview viewport is sized for a taller pane than it gets.
+	sections := []string{
+		renderTabs(m),
+		st.footer.Render(strings.Repeat("━", maxInt(0, m.width))),
+		renderQueryBox(m, tableWidth),
+		st.footer.Render(strings.Repeat(" ", cursorMarkerWidth) + renderColumnHeader(rowWidth)),
+		body,
+	}
 	if promptLine != "" {
 		if prompting {
 			// The prompt is where the keyboard is, so it gets the same fill the

@@ -311,3 +311,84 @@ func TestParseCreateJSONRejectsAKeylessResponse(t *testing.T) {
 		t.Error("a response with no key should be an error")
 	}
 }
+
+// `jira comment list` prints {issue_key, total, comments:[{id,author,body,
+// created,updated}]}. It has no -f flag: JSON is all it prints.
+func TestParseCommentsJSON(t *testing.T) {
+	got, err := ParseCommentsJSON([]byte(`{
+		"issue_key": "ABC-1",
+		"total": 2,
+		"comments": [
+			{"id":"1","author":"甲","body":"first","created":"2026-06-18T16:10:10.119+0900"},
+			{"id":"2","author":"乙","body":"second","created":"2026-06-19T09:00:00.000+0900"}
+		]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("comments = %d, want 2", len(got))
+	}
+	if got[0].Author != "甲" || got[0].Body != "first" {
+		t.Errorf("first comment = %+v", got[0])
+	}
+	if got[0].Created.IsZero() {
+		t.Error("the created time should parse, so the preview can age it")
+	}
+}
+
+// An issue with no comments is the common case and must not be an error.
+func TestParseCommentsJSONAcceptsNone(t *testing.T) {
+	got, err := ParseCommentsJSON([]byte(`{"issue_key":"ABC-1","total":0,"comments":[]}`))
+	if err != nil || len(got) != 0 {
+		t.Errorf("got %v, %v; want no comments and no error", got, err)
+	}
+}
+
+// The preview header already states the type, status, priority and assignee, so
+// rendering `jira get -f markdown` under it printed all of them twice. The json
+// form carries the description on its own.
+func TestParseIssueJSONTakesTheDescriptionOnly(t *testing.T) {
+	body, err := ParseIssueJSON([]byte(`{
+		"key": "ABC-1",
+		"status": "To Do",
+		"priority": "Medium",
+		"description": "# 概要\n\n- ほんぶん"
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "ほんぶん") {
+		t.Errorf("body = %q, want the description", body)
+	}
+	for _, unwanted := range []string{"To Do", "Medium"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("body should not repeat %q, which the header already shows: %q", unwanted, body)
+		}
+	}
+}
+
+// Most issues have no description at all. Saying so beats an empty pane that
+// looks like a failed load.
+func TestParseIssueJSONReportsAnEmptyDescription(t *testing.T) {
+	body, err := ParseIssueJSON([]byte(`{"key":"ABC-1","description":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "no description") {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// The comment list is a subcommand, so the key is the third arg, not the second.
+// Getting that wrong would ask Jira about an issue called "list".
+func TestCLICommentsReadsTheThread(t *testing.T) {
+	cli := CLI{Bin: "./testdata/fake-jira-ok.sh"}
+
+	got, err := cli.Comments(context.Background(), "ABC-1234")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Author != "甲" {
+		t.Fatalf("comments = %+v", got)
+	}
+}

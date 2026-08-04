@@ -50,9 +50,18 @@ type Issue struct {
 	Type     string   `json:"type"`
 	Status   string   `json:"status"`
 	Assignee *string  `json:"assignee"`
+	Reporter *string  `json:"reporter"`
 	Updated  JiraTime `json:"updated"`
 	URL      string   `json:"url"`
-	Project  struct {
+
+	Priority string   `json:"priority"`
+	Labels   []string `json:"labels"`
+
+	// Story points come back null on anything unestimated, which is most
+	// issues, so a pointer keeps "unestimated" apart from a deliberate 0.
+	StoryPoints *float64 `json:"story_points"`
+
+	Project struct {
 		Key string `json:"key"`
 	} `json:"project"`
 
@@ -143,7 +152,38 @@ func ParseSearchJSON(b []byte) ([]Issue, error) {
 type Searcher interface {
 	Search(ctx context.Context, jql string, limit int) ([]Issue, error)
 	Issue(ctx context.Context, key string) (string, error)
+	Comments(ctx context.Context, key string) ([]Comment, error)
 	Create(ctx context.Context, req NewIssueRequest) (Issue, error)
+}
+
+// Comment is one entry from `jira comment list`. It is a separate call from the
+// issue itself - another ~360ms - which is why the preview draws its header and
+// body first and folds comments in when they arrive.
+type Comment struct {
+	ID      string   `json:"id"`
+	Author  string   `json:"author"`
+	Body    string   `json:"body"`
+	Created JiraTime `json:"created"`
+}
+
+// ParseCommentsJSON reads `jira comment list`. That subcommand takes no -f flag:
+// JSON is the only thing it prints.
+func ParseCommentsJSON(b []byte) ([]Comment, error) {
+	var env struct {
+		Comments []Comment `json:"comments"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		return nil, err
+	}
+	return env.Comments, nil
+}
+
+func (c CLI) Comments(ctx context.Context, key string) ([]Comment, error) {
+	out, err := c.run(ctx, "comment", "list", key)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCommentsJSON(out)
 }
 
 // NewIssueRequest is everything the create prompt collects. Project and sprint
@@ -209,12 +249,32 @@ func ParseCreateJSON(b []byte) (Issue, error) {
 	return Issue{Key: created.Key, URL: created.URL}, nil
 }
 
+// Issue returns the body of the preview: the description, and nothing else.
+// The markdown form of `jira get` leads with a bullet list of the type, status,
+// project, assignee, reporter and priority - every one of which the preview
+// header already states from the search results - so it was printing all of
+// them twice.
 func (c CLI) Issue(ctx context.Context, key string) (string, error) {
-	out, err := c.run(ctx, "get", key, "-f", "markdown")
+	out, err := c.run(ctx, "get", key, "-f", "json")
 	if err != nil {
 		return "", err
 	}
-	return string(out), nil
+	return ParseIssueJSON(out)
+}
+
+// ParseIssueJSON pulls the description out of `jira get -f json`. Most issues
+// have none, and saying so beats an empty pane that reads as a failed load.
+func ParseIssueJSON(b []byte) (string, error) {
+	var issue struct {
+		Description *string `json:"description"`
+	}
+	if err := json.Unmarshal(b, &issue); err != nil {
+		return "", err
+	}
+	if issue.Description == nil || strings.TrimSpace(*issue.Description) == "" {
+		return "*no description*", nil
+	}
+	return *issue.Description, nil
 }
 
 func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {

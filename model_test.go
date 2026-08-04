@@ -43,6 +43,13 @@ func (f fakeSearcher) Issue(_ context.Context, key string) (string, error) {
 	return "# " + key, nil
 }
 
+func (f fakeSearcher) Comments(_ context.Context, key string) ([]Comment, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []Comment{{ID: "1", Author: "甲", Body: "a comment on " + key}}, nil
+}
+
 func testConfig() *Config {
 	open := true
 	return &Config{
@@ -62,8 +69,11 @@ func fixedNow() func() time.Time {
 func newTestModel(t *testing.T, s Searcher) Model {
 	t.Helper()
 	m := NewModel(testConfig(), s, NewCache(t.TempDir()), fixedNow())
-	m.width, m.height = 200, 40
-	return m
+	// Through a real terminal the size always arrives as a message, and it is
+	// what sizes the preview viewport - setting the fields alone left it 0x0,
+	// which renders nothing at all.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	return next.(Model)
 }
 
 func issues(keys ...string) []Issue {
