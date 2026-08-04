@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/mattn/go-runewidth"
 )
 
 // detailDebounce is how long the cursor must sit still before the body is
@@ -58,17 +59,18 @@ func (m *Model) refreshDetail(reset bool) {
 	}
 
 	width := m.detail.Width
-	parts := []string{renderPreviewHeader(issue, m.now(), width), rule(width)}
+	ps := newPreviewStyles(m.cfg.Theme)
+	parts := []string{renderPreviewHeader(issue, m.now(), width, ps), rule(width, ps)}
 	if m.detailBody == "" {
-		parts = append(parts, "loading...")
+		parts = append(parts, ps.meta.Render("loading..."))
 	} else {
 		parts = append(parts, strings.TrimSpace(renderMarkdown(m.detailBody, width)))
 	}
 	parts = append(parts,
-		rule(width),
-		"COMMENTS",
+		rule(width, ps),
+		ps.heading.Render("COMMENTS"),
 		"",
-		renderComments(m.detailComments, m.now(), width),
+		renderComments(m.detailComments, m.now(), width, ps),
 	)
 	m.detail.SetContent(strings.Join(parts, "\n"))
 	if reset {
@@ -78,11 +80,11 @@ func (m *Model) refreshDetail(reset bool) {
 	}
 }
 
-func rule(width int) string {
+func rule(width int, ps previewStyles) string {
 	if width <= 0 {
 		return ""
 	}
-	return strings.Repeat("─", width)
+	return ps.rule.Render(strings.Repeat("─", width))
 }
 
 // loadComments is its own call because `jira comment list` is a separate
@@ -126,11 +128,11 @@ func (m Model) loadIssue(key string) tea.Cmd {
 //
 // Laid out like gh-dash's preview: identity, title, a meta line of dot-separated
 // facts, then labels as chips.
-func renderPreviewHeader(i Issue, now time.Time, width int) string {
+func renderPreviewHeader(i Issue, now time.Time, width int, ps previewStyles) string {
 	lines := []string{
-		Truncate(i.Key+"  ·  "+orDefault(i.Project.Key, "-"), width),
+		ps.identity.Render(Truncate(i.Key+"  ·  "+orDefault(i.Project.Key, "-"), width)),
 		"",
-		Truncate(i.Summary, width),
+		ps.title.Render(Truncate(i.Summary, width)),
 		"",
 	}
 
@@ -144,20 +146,37 @@ func renderPreviewHeader(i Issue, now time.Time, width int) string {
 		meta = append(meta, i.Priority)
 	}
 	meta = append(meta, i.AssigneeName())
-	if !i.Updated.IsZero() {
-		meta = append(meta, RelTime(now, i.Updated.Time)+" ago")
-	}
 	if sprint, ok := i.CurrentSprint(); ok {
 		meta = append(meta, sprint.Name)
 	}
-	lines = append(lines, Truncate(strings.Join(meta, " ⋅ "), width))
+	// The age is styled apart from the rest, the way gh-dash drops "1w ago" to
+	// grey in a line that is otherwise dim: it is the one fact here that changes
+	// on its own, without anyone editing the issue. Both halves are cut to fit
+	// before either is styled - measuring a styled string counts its escape
+	// sequences as cells.
+	age := ""
+	if !i.Updated.IsZero() {
+		age = " ⋅ " + RelTime(now, i.Updated.Time) + " ago"
+	}
+	// The age is dropped rather than truncated when the pane is too narrow for
+	// it. Truncating it left the meta line cut to nothing and the age hanging
+	// past the edge of the pane, because only the meta half was being budgeted.
+	if runewidth.StringWidth(age) > width {
+		age = ""
+	}
+	line := ps.meta.Render(Truncate(strings.Join(meta, " ⋅ "),
+		maxInt(0, width-runewidth.StringWidth(age))))
+	if age != "" {
+		line += ps.age.Render(age)
+	}
+	lines = append(lines, line)
 
 	if len(i.Labels) > 0 {
 		chips := make([]string, 0, len(i.Labels))
 		for _, l := range i.Labels {
 			chips = append(chips, "["+l+"]")
 		}
-		lines = append(lines, Truncate(strings.Join(chips, " "), width))
+		lines = append(lines, ps.label.Render(Truncate(strings.Join(chips, " "), width)))
 	}
 
 	return strings.Join(lines, "\n")
@@ -165,18 +184,24 @@ func renderPreviewHeader(i Issue, now time.Time, width int) string {
 
 // renderComments is where an issue's history of decisions lives, which is
 // usually the reason for opening it at all.
-func renderComments(comments []Comment, now time.Time, width int) string {
+func renderComments(comments []Comment, now time.Time, width int, ps previewStyles) string {
 	if len(comments) == 0 {
-		return "no comments"
+		return ps.meta.Render("no comments")
 	}
 	out := make([]string, 0, len(comments)*3)
 	for _, c := range comments {
-		age := "-"
+		age := " ⋅ -"
 		if !c.Created.IsZero() {
-			age = RelTime(now, c.Created.Time)
+			age = " ⋅ " + RelTime(now, c.Created.Time)
 		}
+		// Dropped, not truncated, when it cannot fit - the same reason as the
+		// header's age: only the author half was being budgeted.
+		if runewidth.StringWidth(age) > width {
+			age = ""
+		}
+		author := Truncate(orDefault(c.Author, "-"), maxInt(0, width-runewidth.StringWidth(age)))
 		out = append(out,
-			Truncate(orDefault(c.Author, "-")+" ⋅ "+age, width),
+			ps.author.Render(author)+ps.age.Render(age),
 			// The body is left to the markdown renderer downstream; wrapping it
 			// here would fight with it.
 			c.Body,

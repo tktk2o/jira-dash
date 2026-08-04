@@ -2,6 +2,8 @@ package main
 
 import (
 	"regexp"
+
+	"github.com/mattn/go-runewidth"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +165,7 @@ func TestPreviewHeaderCarriesTheIssueAtAGlance(t *testing.T) {
 	issue.Project.Key = "ABC"
 	issue.Updated.Time = time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
 
-	out := renderPreviewHeader(issue, fixedNow()(), 90)
+	out := renderPreviewHeader(issue, fixedNow()(), 90, newPreviewStyles(Theme{}))
 
 	for _, want := range []string{
 		"ABC-1234", "ABC", "トークン更新で 500 が出る",
@@ -178,7 +180,7 @@ func TestPreviewHeaderCarriesTheIssueAtAGlance(t *testing.T) {
 
 // Labels are chips, so an issue with none must not leave an empty frame behind.
 func TestPreviewHeaderOmitsAnEmptyLabelRow(t *testing.T) {
-	out := renderPreviewHeader(Issue{Key: "ABC-1"}, fixedNow()(), 90)
+	out := renderPreviewHeader(Issue{Key: "ABC-1"}, fixedNow()(), 90, newPreviewStyles(Theme{}))
 	if strings.Contains(out, "[]") || strings.Contains(out, "labels") {
 		t.Errorf("no label row should be drawn when there are none:\n%s", out)
 	}
@@ -193,7 +195,7 @@ func TestRenderCommentsShowsAuthorAgeAndBody(t *testing.T) {
 	comments[0].Created.Time = now.Add(-48 * time.Hour)
 	comments[1].Created.Time = now.Add(-1 * time.Hour)
 
-	out := renderComments(comments, now, 80)
+	out := renderComments(comments, now, 80, newPreviewStyles(Theme{}))
 
 	for _, want := range []string{"甲", "2d", "割付後は対象外", "乙", "1h", "対応済み"} {
 		if !strings.Contains(out, want) {
@@ -204,7 +206,7 @@ func TestRenderCommentsShowsAuthorAgeAndBody(t *testing.T) {
 
 // Saying "no comments" is information; a blank gap is not.
 func TestRenderCommentsSaysWhenThereAreNone(t *testing.T) {
-	if out := renderComments(nil, fixedNow()(), 80); !strings.Contains(out, "no comments") {
+	if out := renderComments(nil, fixedNow()(), 80, newPreviewStyles(Theme{})); !strings.Contains(out, "no comments") {
 		t.Errorf("out = %q", out)
 	}
 }
@@ -369,5 +371,71 @@ func TestPreviewReturnsToTheTopOnANewSelection(t *testing.T) {
 
 	if m.detail.YOffset != 0 {
 		t.Errorf("offset = %d, want the new issue to open at the top", m.detail.YOffset)
+	}
+}
+
+// The preview had the same flatness the rows did: every line one colour, so
+// nothing separated the title from the facts under it or a comment's author from
+// its body. These are the weights read off gh-dash's own pane.
+//
+// Asserted on the styles, not on rendered output: lipgloss strips colour when it
+// is not writing to a terminal, so under `go test` the pane renders bare.
+func TestPreviewWeightsItsBlocks(t *testing.T) {
+	ps := newPreviewStyles(Theme{})
+
+	if !ps.title.GetBold() {
+		t.Error("the title should be the bold thing in the header")
+	}
+	if ps.identity.GetForeground() == ps.title.GetForeground() {
+		t.Error("the identity line should recede behind the title")
+	}
+	if !ps.heading.GetUnderline() || !ps.heading.GetBold() {
+		t.Error("a block heading should be bold and underlined, like gh-dash's")
+	}
+	if ps.rule.GetForeground() == ps.meta.GetForeground() {
+		t.Error("the rules should be fainter than the text they divide")
+	}
+	if ps.age.GetForeground() == ps.meta.GetForeground() {
+		t.Error("the age should be its own weight, as it is in a row")
+	}
+}
+
+// Widths are measured on the plain text, so a segment styled before it is cut
+// would count its escape sequences as cells and overflow the pane.
+func TestPreviewHeaderNeverExceedsItsWidth(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	issue := Issue{
+		Key: "ABC-1234", Type: "サブタスク", Status: "In Progress",
+		Summary: strings.Repeat("長い要約", 30), Priority: "Highest", Labels: []string{"設計", "調査"},
+	}
+	issue.Assignee = ptr("琢人 加藤")
+	issue.Updated.Time = now.Add(-2 * time.Hour)
+	issue.Project.Key = "ABC"
+
+	for _, width := range []int{80, 40, 20, 8} {
+		for _, line := range strings.Split(
+			plain(renderPreviewHeader(issue, now, width, newPreviewStyles(Theme{}))), "\n") {
+			if got := runewidth.StringWidth(line); got > width {
+				t.Errorf("width %d: a header line is %d cells: %q", width, got, line)
+			}
+		}
+	}
+}
+
+// A comment line is the same two-part layout as the header's meta line, and had
+// the same defect: only the author half was budgeted, so a narrow pane kept the
+// age at full length and overflowed.
+func TestCommentLinesNeverExceedTheirWidth(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	c := Comment{Author: "琢人 加藤", Body: "b"}
+	c.Created.Time = now.Add(-3 * time.Hour)
+
+	for _, width := range []int{80, 20, 6, 3} {
+		for _, line := range strings.Split(
+			plain(renderComments([]Comment{c}, now, width, newPreviewStyles(Theme{}))), "\n") {
+			if got := runewidth.StringWidth(line); got > width {
+				t.Errorf("width %d: %q is %d cells", width, line, got)
+			}
+		}
 	}
 }

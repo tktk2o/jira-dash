@@ -54,7 +54,37 @@ const (
 const (
 	identityBlue = "#42a0fa"
 	ageGrey      = "#8a8a8a"
+	// The rules inside gh-dash's preview are almost the background colour: they
+	// separate blocks without becoming one of the things on the pane.
+	faintRule = "#1c1c1c"
 )
+
+// previewStyles is the preview's half of the same weighting the rows got, read
+// off gh-dash's own pane: the identity dimmed above a bold title, a meta line
+// that drops the age to grey, block headings bold and underlined, and rules dark
+// enough to divide without competing.
+type previewStyles struct {
+	identity, title, meta, age, label, rule, heading, author lipgloss.Style
+}
+
+func newPreviewStyles(t Theme) previewStyles {
+	primary := lipgloss.Color(orDefault(t.Colors.Text.Primary, "#f8f8f2"))
+	secondary := lipgloss.Color(orDefault(t.Colors.Text.Secondary, "#6272a4"))
+
+	base := lipgloss.NewStyle()
+	return previewStyles{
+		identity: base.Foreground(secondary),
+		title:    base.Foreground(primary).Bold(true),
+		meta:     base.Foreground(secondary),
+		age:      base.Foreground(lipgloss.Color(ageGrey)),
+		label:    base.Foreground(secondary),
+		rule:     base.Foreground(lipgloss.Color(faintRule)),
+		heading:  base.Foreground(primary).Bold(true).Underline(true),
+		// An author carries the same weight as a title: on a comment it is the
+		// thing you scan for.
+		author: base.Foreground(primary).Bold(true),
+	}
+}
 
 type styles struct {
 	activeTab   lipgloss.Style
