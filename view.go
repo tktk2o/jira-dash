@@ -41,10 +41,9 @@ const (
 	// none, so only the width subtracts it.
 	borderPadding = 2
 	paneGap       = 1 // the space View puts between table and preview
-	// Lines View spends on chrome above and below the table: the tab strip, the
-	// rule under it, the query line, the column header, the footer and the
-	// prompt line.
-	verticalChrome = 6
+	// Lines renderHelp draws when the help is open. tableHeight subtracts it, so
+	// it has to match renderHelp exactly.
+	helpHeight = 3
 )
 
 type styles struct {
@@ -236,20 +235,22 @@ func renderFooter(m Model) string {
 	return st.footer.Render(fmt.Sprintf("%s · %d issues · r:refresh ?:help", state, len(s.visible())))
 }
 
-func renderHelp() string {
-	return strings.Join([]string{
-		"h/l ←/→ tab    switch section",
-		"j/k gg/G       move",
-		"p              toggle preview",
-		"ctrl+d/ctrl+u  scroll the preview",
-		"/              filter (esc clears)",
-		"r              refresh section",
-		"y/Y            copy key / url",
-		"?              help",
-		"q              quit",
-		"",
+// renderHelp expands the footer's "?:help" in place, below it, the way gh-dash
+// does. As a whole-screen replacement it took the list away to tell you how to
+// move around the list, and there was no way to try a key while reading it.
+//
+// Exactly helpHeight lines, so the table can be given the room this takes.
+func renderHelp(width int) string {
+	lines := []string{
+		"h/l ←/→ tab  section · j/k gg/G  move · /  filter · esc  clear filter",
+		"p  preview · ctrl+d/ctrl+u  scroll preview · y/Y  copy key/url · r  refresh · q  quit",
 		"create keys come from the config (esc cancels)",
-	}, "\n")
+	}
+	for i, line := range lines {
+		lines[i] = strings.Repeat(" ", cursorMarkerWidth) +
+			Truncate(line, maxInt(0, width-cursorMarkerWidth))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderCreatePrompt states where the new issue will land before it is created,
@@ -267,10 +268,6 @@ func renderCreatePrompt(m Model) string {
 }
 
 func (m Model) View() string {
-	if m.showHelp {
-		return renderHelp()
-	}
-
 	st := newStyles(m.cfg.Theme)
 	s := m.sections[m.active]
 
@@ -307,16 +304,9 @@ func (m Model) View() string {
 		rows = append(rows, st.footer.Render(placeholder))
 	}
 
-	table := strings.Join(rows, "\n")
-	body := table
-	if showPreview {
-		// The border is what separates the two panes; without it the markdown
-		// ran straight into the table rows and read as part of them.
-		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.border.Render(m.detail.View()))
-	}
-
 	// The create prompt takes the filter's line instead of adding one, so the
-	// table does not shift by a row when it opens.
+	// table does not shift by a row when it opens. It is resolved before the rows
+	// are windowed because whether it is there decides how many rows fit.
 	promptLine, prompting := "", true
 	switch {
 	case m.creating:
@@ -327,6 +317,15 @@ func (m Model) View() string {
 		promptLine, prompting = "filter: "+s.filter, false
 	default:
 		prompting = false
+	}
+
+	rows = windowRows(rows, s.cursor, m.tableHeight(promptLine != ""))
+	table := strings.Join(rows, "\n")
+	body := table
+	if showPreview {
+		// The border is what separates the two panes; without it the markdown
+		// ran straight into the table rows and read as part of them.
+		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.border.Render(m.detail.View()))
 	}
 
 	// The chrome above the table, in the order gh-dash stacks it: tabs, a rule
@@ -353,7 +352,47 @@ func (m Model) View() string {
 		}
 	}
 	sections = append(sections, renderFooter(m))
+	// Below the footer, because it is that line's "?:help" expanding in place.
+	// The keys keep working while it is open - being able to try one while
+	// reading it is the point of not taking the screen away.
+	if m.showHelp {
+		sections = append(sections, st.footer.Render(renderHelp(tableWidth)))
+	}
 	return strings.Join(sections, "\n")
+}
+
+// tableHeight is how many row lines fit once the chrome has taken its share.
+// Without this the rows simply ran past the bottom of the terminal and the tab
+// strip was pushed off the top - a 41-issue section on a 45-line terminal had
+// already lost it.
+func (m Model) tableHeight(hasPrompt bool) int {
+	// The tab strip, the rule, the query line, the column header, the footer.
+	chrome := 5
+	if hasPrompt {
+		chrome++
+	}
+	if m.showHelp {
+		chrome += helpHeight
+	}
+	return maxInt(1, m.height-chrome)
+}
+
+// windowRows keeps the cursor on screen by holding it in the middle of the
+// window once the list is longer than the window. Below the halfway point the
+// window stays at the top, so short lists and the first rows of a long one do
+// not scroll at all.
+func windowRows(rows []string, cursor, height int) []string {
+	if height <= 0 || len(rows) <= height {
+		return rows
+	}
+	start := cursor - height/2
+	if start < 0 {
+		start = 0
+	}
+	if start > len(rows)-height {
+		start = len(rows) - height
+	}
+	return rows[start : start+height]
 }
 
 // copiedMsg reports the outcome of a clipboard write, and commandRanMsg the

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -439,6 +440,89 @@ func TestChromeAboveTheTableSharesTheTableWidth(t *testing.T) {
 		}
 		if got := runewidth.StringWidth(line); got != tableWidth {
 			t.Errorf("the rule is %d cells, want the table's %d: %q", got, tableWidth, line)
+		}
+	}
+}
+
+// The help used to replace the whole screen - it took the list away in order to
+// tell you how to move around the list. It expands the footer's "?:help" in
+// place now, so the rows stay visible beside it.
+func TestHelpOpensBelowTheListNotOverIt(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	m = press(m, "?")
+	out := m.View()
+
+	if !strings.Contains(out, "ABC-1") {
+		t.Errorf("the list should stay on screen with the help open: %q", out)
+	}
+	if !strings.Contains(out, "switch section") && !strings.Contains(out, "section") {
+		t.Errorf("the help should be on screen: %q", out)
+	}
+	// The footer is what the help expands, so the help comes after it.
+	lines := strings.Split(out, "\n")
+	footer, help := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "r:refresh") {
+			footer = i
+		}
+		if strings.Contains(line, "copy key/url") {
+			help = i
+		}
+	}
+	if footer < 0 || help < 0 || help < footer {
+		t.Errorf("help (line %d) should sit below the footer (line %d)", help, footer)
+	}
+}
+
+// Reading the keys is not a mode: being able to try one while the list is still
+// there is the reason the help no longer takes the screen.
+func TestKeysStillWorkWhileTheHelpIsOpen(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	m = press(m, "?")
+	m = press(m, "j")
+	if got := m.sections[0].cursor; got != 1 {
+		t.Errorf("cursor = %d, want the help not to swallow j", got)
+	}
+
+	m = press(m, "l")
+	if m.active != 1 {
+		t.Errorf("active = %d, want the section switch to still work", m.active)
+	}
+	if !strings.Contains(m.View(), "copy key/url") {
+		t.Error("the help should stay open across other keys")
+	}
+}
+
+// Rows used to run off the bottom of the terminal, which pushed the tab strip
+// off the top: a 41-issue section on a 45-line terminal had already lost it.
+func TestViewNeverDrawsMoreLinesThanTheTerminalHas(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	keys := make([]string, 0, 80)
+	for i := 0; i < 80; i++ {
+		keys = append(keys, "ABC-"+strconv.Itoa(i))
+	}
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues(keys...), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	// Toggled through the key, not the field: the preview is resized on the way
+	// through, and the two heights drifting is exactly the bug this guards.
+	for _, help := range []bool{false, true} {
+		if m.showHelp != help {
+			m = press(m, "?")
+		}
+		if got := strings.Count(m.View(), "\n") + 1; got > m.height {
+			t.Errorf("showHelp=%v: rendered %d lines on a %d line terminal", help, got, m.height)
+		}
+		// Whatever gets cut, it must not be the row the cursor is on.
+		m.sections[0].cursor = 79
+		if !strings.Contains(m.View(), "ABC-79") {
+			t.Errorf("showHelp=%v: the selected row scrolled off screen", help)
 		}
 	}
 }

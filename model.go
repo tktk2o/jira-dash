@@ -186,18 +186,28 @@ func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
 	}
 }
 
+// resizeDetail sizes the preview viewport, which does not draw its own chrome
+// and starts 0x0 - without this the pane renders nothing at all. What is
+// subtracted is what View wraps it in: the border (2 cells each way) and the
+// padding inside it, and the single-column gap between the panes.
+//
+// Its height comes from tableHeight rather than its own arithmetic, because the
+// two sit side by side and the taller one decides how far down the screen the
+// footer lands. Computed separately they drifted, and opening the help pushed
+// two lines off the bottom of the terminal. tableHeight is asked for its
+// smallest answer - the one with the prompt line open - since the prompt appears
+// without the viewport being resized.
+func (m *Model) resizeDetail() {
+	previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
+	m.detail.Width = maxInt(0, previewWidth-borderChrome-borderPadding-paneGap)
+	m.detail.Height = maxInt(0, m.tableHeight(true)-borderChrome)
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		// The viewport starts 0x0, so without this the preview pane renders
-		// nothing at all. What is subtracted is chrome the viewport does not
-		// draw itself: the border View wraps it in (2 cells each way) and the
-		// padding inside that border, the single-column gap between the panes,
-		// and vertically the tab strip, the footer and the filter line.
-		previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
-		m.detail.Width = maxInt(0, previewWidth-borderChrome-borderPadding-paneGap)
-		m.detail.Height = maxInt(0, m.height-verticalChrome-borderChrome)
+		m.resizeDetail()
 		return m, nil
 
 	case fetchedMsg:
@@ -401,7 +411,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "Y":
 		return m, m.copySelected(func(i Issue) string { return i.URL })
 	case "?":
+		// The help opens below the footer rather than over the screen, so it takes
+		// lines the preview was using and the pane has to be told.
 		m.showHelp = !m.showHelp
+		m.resizeDetail()
 		return m, nil
 	}
 
