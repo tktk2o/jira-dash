@@ -88,7 +88,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf(
-				"config not found: %s\nsetup.sh seeds it from jira-dash/config.yml.example", path)
+				"config not found: %s\ncopy config.yml.example from this repository to that path and edit it", path)
 		}
 		return nil, err
 	}

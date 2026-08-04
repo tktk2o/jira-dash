@@ -1,0 +1,3 @@
+# Docs kept machine-local while still being decided. Dropping the .local
+# suffix is what makes one committable.
+*.local.md

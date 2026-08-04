@@ -48,7 +48,7 @@ func run(configFlag, section string) error {
 	}
 
 	// Config first: on a machine that is missing both, its error is the one
-	// that names a next step ("setup.sh seeds it from ..."), whereas the CLI
+	// that names a next step ("copy config.yml.example to ..."), whereas the CLI
 	// error can only say the binary is absent.
 	path := resolveConfigPath(configFlag, os.Getenv("JIRA_DASH_CONFIG"), home)
 	cfg, err := LoadConfig(path)

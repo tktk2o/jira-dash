@@ -1,9 +1,12 @@
 # jira-dash config — TEMPLATE / SEED
 #
-# The live config is the untracked, machine-local file `config.local.yml`
-# (a JQL names project keys, which must NOT be committed — this is a public
-# repo). setup.sh seeds config.local.yml from this file on first run, then
-# symlinks it to ~/.config/jira-dash/config.yml.
+# The live config is `config.local.yml`, which .gitignore keeps out of the
+# repository: a JQL names project keys, and a section can name a sprint. Copy
+# this file to config.local.yml, edit it, and symlink it to where jira-dash
+# looks:
+#
+#   cp config.yml.example config.local.yml
+#   ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 #
 # Filters are raw JQL, so anything you can build in the Jira web UI can be
 # pasted here verbatim.
