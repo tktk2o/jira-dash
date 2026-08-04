@@ -167,6 +167,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadIssue(msg.key)
 
+	case copiedMsg:
+		if msg.err != nil {
+			m.status = msg.err.Error()
+			return m, nil
+		}
+		m.status = "copied " + msg.value
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -317,9 +325,3 @@ func maxInt(a, b int) int {
 func (m *Model) selectionChanged() tea.Cmd { return nil }
 
 func (m Model) loadIssue(string) tea.Cmd { return nil }
-
-func (m Model) copySelected(func(Issue) string) tea.Cmd { return nil }
-
-func (m Model) runUserKeybinding(string) (tea.Model, tea.Cmd) { return m, nil }
-
-func (m Model) View() string { return "" }
