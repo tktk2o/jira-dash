@@ -37,6 +37,25 @@ ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 自前で展開する）。`config.local.yml` は `.gitignore` 済み — JQL がプロジェクトキーや
 スプリント名を含むため、コミットしない。
 
+```
+--config <path>      設定ファイル（既定: ~/.config/jira-dash/config.yml）
+--section <title>    このタイトルのタブで開く。無い名前なら候補を並べて終了する
+--version            バージョンを表示して終了
+```
+
+### 設定は起動時に検証する
+
+黙って無視されるより落ちたほうがマシなものは、すべて起動時に落とす。
+
+- **知らないキー**（`limmit:` のような typo）— YAML は既定では黙って捨てるので、
+  設定した機能だけが動かない状態になる。設定が悪いと言わせる
+- **キーの二重取り** — `create` と `keybindings.issues` が同じキーを持つ、または
+  ダッシュボード自身のキー（`j` / `/` / `q` / `r` など）を奪う。押した側は
+  handleKey の判定順で黙って負けるので、負けた側が見えるのは起動時だけ
+- **`dir` の不在** — 上記のとおり
+- **空の値** — title / jql の無い section、type の無い `create`、command の無い
+  keybinding
+
 ## キー操作
 
 | キー | 動作 |
@@ -44,6 +63,7 @@ ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 | `h` / `l` / `←` / `→` / `tab` / `shift+tab` | セクション切り替え |
 | `j` / `k` / `gg` / `G` | 移動 |
 | `p` | プレビューの開閉 |
+| `ctrl+d` / `ctrl+u` | プレビューを半画面スクロール（行カーソルは動かない） |
 | `/` | 絞り込み（`esc` で解除）。再取得はしない |
 | `r` | このセクションを再取得 |
 | `y` / `Y` | 課題キー / URL をコピー |
@@ -66,9 +86,9 @@ jiraSections:
 ```
 
 これは2通りに効く。コマンド自身の cwd になり、かつ `{{.Dir}}` で参照できる。
-両方あるのは、`tmux new-window` が**cwd を継承せず `-c` で受け取る**ため —
-新しいウィンドウを開く類のコマンドには `-c {{.Dir}}` が必要で、`git log` の
-ような自前で完結するコマンドには cwd だけで足りる。
+両方あるのは、`tmux split-window` / `new-window` が**cwd を継承せず `-c` で受け取る**
+ため — 新しいペインやウィンドウを開く類のコマンドには `-c {{.Dir}}` が必要で、
+`git log` のような自前で完結するコマンドには cwd だけで足りる。
 
 先頭の `~` は展開する。パスの存在は**起動時に**確認する（キーを押した瞬間ではなく）
 — typo が「入れないディレクトリ」についてのコマンド側のエラーとして、ずっと後に
@@ -93,9 +113,19 @@ jiraSections:
   name: ask claude
   prompt: true
   command: >-
-    tmux new-window -n {{.IssueKey}}
+    tmux split-window -v -c {{.Dir}}
     claude --permission-mode auto {{.Prompt}}
 ```
+
+`split-window` なのは、Claude と jhd を**同じ画面に並べる**ため。あの枠の中で Claude
+を動かすことはできない — Claude Code は alternate screen を使う全画面 TUI なので、
+枠に収めるには jhd 自身が PTY を持ってターミナルエミュレータになる必要があり、かつ
+3行の枠は Claude が使える画面ではない。split なら tmux にその仕事をさせられる。
+
+`-v`（下に split）なので**幅が変わらず**、プレビューもヘルプの列レイアウトもそのまま
+生きる。代わりに見える行数が半分になる。`-h`（横に split）だと幅が半分になり、表が
+`minTableWidth` を割ってプレビューが自動で閉じる。jhd 側にフォーカスを残したいなら
+`-d` を足す。
 
 本文を同梱するのは、プレビューが**すでに取得済み**だから。渡さないと受け手が
 `jira get` にもう一度 ~360ms 払うことになり、そもそも認証情報を持っていない
@@ -110,7 +140,18 @@ CLI 起動 ~360ms）。カーソルを置いた直後に押すとタイトルと
 
 ## 課題の作成
 
-設定した `create` キーで、下端に枠が出る（gh-dash の "Approve with comment…" と同じ形）。
+キーと課題型の対応は設定で決める。型の名前はサイトごとに違う（日本語サイトなら
+日本語）のでコードには置けない。
+
+```yaml
+create:
+  - key: c
+    type: Task
+  - key: C
+    type: Story
+```
+
+このキーで下端に枠が出る（gh-dash の "Approve with comment…" と同じ形）。
 `Ctrl+d` で送信、`esc` / `Ctrl+c` で取消 — 枠の中では `enter` が改行になるので、
 使えるキーは枠の下端に書いてある。
 

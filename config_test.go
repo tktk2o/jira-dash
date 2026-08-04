@@ -278,3 +278,13 @@ func TestConfigRefusesADirThatIsAFile(t *testing.T) {
 		t.Fatalf("want a not-a-directory error, got %v", err)
 	}
 }
+
+// The README's install path is to copy this file, so a template that cannot load
+// is a broken first run. It has failed that way once already: an example
+// defaults.dir pointing at a path that exists on nobody's machine, checked at
+// load, refused to start.
+func TestTheExampleConfigLoads(t *testing.T) {
+	if _, err := LoadConfig("config.yml.example"); err != nil {
+		t.Errorf("config.yml.example should load as shipped: %v", err)
+	}
+}

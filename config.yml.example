@@ -53,7 +53,10 @@ defaults:
   # keybindings の走る作業ディレクトリ。ボードとリポジトリは対応するので
   # section ごとに書けるが、全タブが同じ checkout を見るならここで足りる。
   # 起動時に存在を確認する（打った瞬間ではなく）ので、typo はここで落ちる。
-  dir: ~/src/github.com/example/some-repo
+  #
+  # コメントアウトしてあるのはそのため: 存在しないパスを書いたテンプレートは
+  # コピーした直後の起動を落とす。自分の checkout を指すときに外す。
+  # dir: ~/src/github.com/example/some-repo
   preview:
     open: true
     position: right
@@ -61,6 +64,20 @@ defaults:
     # own when it would leave the table under 80 columns.
     width: 0.5
   limit: 20
+
+# 課題を作るキー。型はサイトごとに名前が違う（日本語サイトなら日本語）ので
+# コードではなく設定側にある。project とスプリントはカーソル下の行から継承する
+# ので、打つのはタイトルだけ。
+#
+# ダッシュボード自身が押さえているキー（j/k/q/r/y/p/? など）は使えない。
+# create と keybindings で同じキーを二重に割り当てるのも起動時に落ちる:
+# 先に見る create 側が勝ち、もう片方が黙って死ぬのを避けるため。
+#
+#   create:
+#     - key: c
+#       type: Task
+#     - key: C
+#       type: Story
 
 # Every {{...}} value is substituted already shell-quoted, because a Jira
 # title is free text and this command is run through `sh -c`. Do NOT add your
@@ -74,11 +91,11 @@ keybindings:
       # which is honest but usually longer than the pane.
       name: open in browser
       command: open {{.IssueURL}}
-    #: 課題を Claude に渡して調査を始める（横に split）
+    #: 課題を Claude に渡して調査を始める（下に split）
     - key: R
       name: claude
       command: >-
-        tmux split-window -h -c {{.Dir}}
+        tmux split-window -v -c {{.Dir}}
         claude --permission-mode auto {{.IssueKey}}
 
     #: 指示を打って Claude に渡す（課題・本文つき、横に split）
@@ -86,7 +103,7 @@ keybindings:
       name: ask claude
       prompt: true
       command: >-
-        tmux split-window -h -c {{.Dir}}
+        tmux split-window -v -c {{.Dir}}
         claude --permission-mode auto {{.Prompt}}
 
 theme:
