@@ -22,6 +22,26 @@ func TestResolveConfigPathPrecedence(t *testing.T) {
 	}
 }
 
+// A shell expands ~ when the value is typed interactively, but not when it
+// arrives quoted, from a script, or from JIRA_DASH_CONFIG set in a profile.
+func TestResolveConfigPathExpandsTilde(t *testing.T) {
+	home := "/home/someone"
+
+	if got := resolveConfigPath("~/foo.yml", "", home); got != "/home/someone/foo.yml" {
+		t.Errorf("flag = %q, want the expanded path", got)
+	}
+	if got := resolveConfigPath("", "~/bar.yml", home); got != "/home/someone/bar.yml" {
+		t.Errorf("env = %q, want the expanded path", got)
+	}
+	if got := resolveConfigPath("~", "", home); got != home {
+		t.Errorf("bare ~ = %q, want %q", got, home)
+	}
+	// Only a leading ~ is special; a path that merely contains one is left be.
+	if got := resolveConfigPath("/tmp/~weird.yml", "", home); got != "/tmp/~weird.yml" {
+		t.Errorf("mid-path ~ = %q, should be untouched", got)
+	}
+}
+
 func TestSectionIndexByTitle(t *testing.T) {
 	cfg := testConfig()
 

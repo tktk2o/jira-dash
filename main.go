@@ -47,16 +47,19 @@ func run(configFlag, section string) error {
 		return err
 	}
 
-	// A missing CLI is the one dependency worth naming explicitly; every
-	// section would otherwise fail with the same unhelpful error.
-	if _, err := exec.LookPath("jira"); err != nil {
-		return errors.New("the `jira` CLI is not on PATH")
-	}
-
+	// Config first: on a machine that is missing both, its error is the one
+	// that names a next step ("setup.sh seeds it from ..."), whereas the CLI
+	// error can only say the binary is absent.
 	path := resolveConfigPath(configFlag, os.Getenv("JIRA_DASH_CONFIG"), home)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		return err
+	}
+
+	// A missing CLI is the one dependency worth naming explicitly; every
+	// section would otherwise fail with the same unhelpful error.
+	if _, err := exec.LookPath("jira"); err != nil {
+		return errors.New("the `jira` CLI is not on PATH")
 	}
 
 	start, err := sectionIndex(cfg, section)
@@ -74,12 +77,26 @@ func run(configFlag, section string) error {
 
 func resolveConfigPath(flagValue, env, home string) string {
 	if flagValue != "" {
-		return flagValue
+		return expandHome(flagValue, home)
 	}
 	if env != "" {
-		return env
+		return expandHome(env, home)
 	}
 	return filepath.Join(home, ".config", "jira-dash", "config.yml")
+}
+
+// expandHome resolves a leading ~ itself. An interactive shell normally does
+// it, but not when the value arrives quoted, from a script, or from
+// JIRA_DASH_CONFIG set in a profile - and a literal "~/..." path only fails
+// later as a confusing not-found error.
+func expandHome(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	}
+	return path
 }
 
 // sectionIndex maps --section to a tab. An unknown title lists what is
