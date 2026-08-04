@@ -66,9 +66,13 @@ keybindings:
   issues:
     #: 課題をブラウザで開く
     - key: o
+      # name is what ? calls this key. Without it the help shows the command,
+      # which is honest but usually longer than the pane.
+      name: open in browser
       command: open {{.IssueURL}}
     #: 課題を Claude に渡して調査を始める（新しい tmux ウィンドウ）
     - key: R
+      name: claude
       command: >-
         tmux new-window -n {{.IssueKey}}
         claude --permission-mode auto {{.IssueKey}}

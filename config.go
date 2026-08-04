@@ -61,6 +61,9 @@ type Keybindings struct {
 type Keybinding struct {
 	Key     string `yaml:"key"`
 	Command string `yaml:"command"`
+	// Name is what the help calls this key. Optional: without it the help falls
+	// back to the command, which is honest but usually longer than the pane.
+	Name string `yaml:"name"`
 }
 
 type Theme struct {

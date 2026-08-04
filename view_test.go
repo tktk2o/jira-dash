@@ -601,3 +601,30 @@ func TestSelectedRowCarriesTheFillInEverySegment(t *testing.T) {
 func plainRow(i Issue, width int, now time.Time) string {
 	return plain(renderRow(i, width, now, newRowStyles(Theme{}, false)))
 }
+
+// The help said "create keys come from the config" while four configured keys
+// went unnamed, so the features they run were invisible to the person who set
+// them up - which is how a working create key came to be forgotten.
+func TestHelpNamesTheConfiguredKeys(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Create = []CreateKey{{Key: "c", Type: "タスク"}}
+	m.cfg.Keybindings.Issues = []Keybinding{
+		{Key: "R", Name: "claude", Command: "tmux new-window claude"},
+		{Key: "o", Command: "open {{.IssueURL}}"},
+	}
+
+	out := renderHelp(m, 200)
+
+	for _, want := range []string{"c", "new タスク", "R", "claude"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help is missing %q: %q", want, out)
+		}
+	}
+	// Without a name the command itself is shown - unhelpful is better than absent.
+	if !strings.Contains(out, "open {{.IssueURL}}") {
+		t.Errorf("an unnamed key should fall back to its command: %q", out)
+	}
+	if strings.Count(out, "\n") != helpHeight-1 {
+		t.Errorf("help drew %d lines, want helpHeight=%d", strings.Count(out, "\n")+1, helpHeight)
+	}
+}

@@ -348,12 +348,28 @@ func renderFooter(m Model) string {
 // does. As a whole-screen replacement it took the list away to tell you how to
 // move around the list, and there was no way to try a key while reading it.
 //
+// The configured keys are listed by name, not summarised as "create keys come
+// from the config" - which was what the help said while four working keys went
+// unnamed, so the features they run were invisible to the person who set them up.
+//
 // Exactly helpHeight lines, so the table can be given the room this takes.
-func renderHelp(width int) string {
+func renderHelp(m Model, width int) string {
+	configured := make([]string, 0, len(m.cfg.Create)+len(m.cfg.Keybindings.Issues))
+	for _, ck := range m.cfg.Create {
+		configured = append(configured, ck.Key+"  new "+ck.Type)
+	}
+	for _, kb := range m.cfg.Keybindings.Issues {
+		configured = append(configured, kb.Key+"  "+orDefault(kb.Name, kb.Command))
+	}
+	third := "no keys configured"
+	if len(configured) > 0 {
+		third = strings.Join(configured, " · ")
+	}
+
 	lines := []string{
 		"h/l ←/→ tab  section · j/k gg/G  move · /  filter · esc  clear filter",
 		"p  preview · ctrl+d/ctrl+u  scroll preview · y/Y  copy key/url · r  refresh · q  quit",
-		"create keys come from the config (esc cancels)",
+		third,
 	}
 	for i, line := range lines {
 		lines[i] = strings.Repeat(" ", leftMargin) +
@@ -465,7 +481,7 @@ func (m Model) View() string {
 	// The keys keep working while it is open - being able to try one while
 	// reading it is the point of not taking the screen away.
 	if m.showHelp {
-		sections = append(sections, st.footer.Render(renderHelp(tableWidth)))
+		sections = append(sections, st.footer.Render(renderHelp(m, tableWidth)))
 	}
 	return strings.Join(sections, "\n")
 }
