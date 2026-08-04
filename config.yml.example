@@ -98,7 +98,7 @@ keybindings:
         tmux split-window -v -c {{.Dir}}
         claude --permission-mode auto {{.IssueKey}}
 
-    #: 指示を打って Claude に渡す（課題・本文つき、横に split）
+    #: 指示を打って Claude に渡す（課題・本文つき、下に split）
     - key: a
       name: ask claude
       prompt: true
