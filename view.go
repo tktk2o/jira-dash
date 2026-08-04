@@ -16,30 +16,35 @@ import (
 // Column widths. Only the summary grows; the rest are fixed so the columns
 // line up between rows and between sections.
 const (
-	colKey      = 10
-	colIcon     = 3
-	colStatus   = 13
-	colPoints   = 3
-	colPriority = 7
+	colKey    = 10
+	colIcon   = 3
+	colStatus = 11 // "In Progress", the longest default status name
+	colPoints = 2
+	// Long enough for a full name in either script; the preview carries the
+	// untruncated one.
 	colAssignee = 10
-	colUpdated  = 5
-	colGaps     = 6 // single spaces between the seven columns
+	colUpdated  = 4 // "365d"
+	colGaps     = 6 // single spaces between the six columns and the summary
 
-	// The whole meta line. Named so the column header and the row cannot drift
-	// apart: a header that does not line up with its rows is worse than none.
+	// Everything to the left of the summary. Named so the column header and the
+	// row cannot drift apart: a header that does not line up with its rows is
+	// worse than none.
 	rowFixedWidth = colKey + colIcon + colStatus + colPoints +
-		colPriority + colAssignee + colUpdated + colGaps
+		colAssignee + colUpdated + colGaps
 
 	// "→ " / "  " drawn by View in front of every row.
 	cursorMarkerWidth = 2
 
 	// Chrome around the preview viewport, which it does not draw itself.
 	borderChrome = 2 // the rounded border, both edges of one axis
-	paneGap      = 1 // the space View puts between table and preview
+	// The horizontal padding inside that border, both edges. Vertically there is
+	// none, so only the width subtracts it.
+	borderPadding = 2
+	paneGap       = 1 // the space View puts between table and preview
 	// Lines View spends on chrome above and below the table: the tab strip, the
-	// rule under it, the three-line query box, the column header, the footer and
-	// the prompt line.
-	verticalChrome = 8
+	// rule under it, the query line, the column header, the footer and the
+	// prompt line.
+	verticalChrome = 6
 )
 
 type styles struct {
@@ -67,7 +72,9 @@ func newStyles(t Theme) styles {
 		selectedRow: lipgloss.NewStyle().Foreground(primary).Background(selected),
 		row:         lipgloss.NewStyle().Foreground(primary),
 		footer:      lipgloss.NewStyle().Foreground(secondary),
-		border:      lipgloss.NewStyle().Foreground(border).Border(lipgloss.RoundedBorder()),
+		// Padded, because a border alone glued every line of the preview to the
+		// │ on both sides, which is most of what made the pane read as cramped.
+		border: lipgloss.NewStyle().Foreground(border).Border(lipgloss.RoundedBorder()).Padding(0, 1),
 	}
 }
 
@@ -112,28 +119,28 @@ func renderTabs(m Model) string {
 	return strings.Join(parts, "│")
 }
 
-// renderQueryBox shows what the section actually asks Jira for. Two tabs can
+// renderQueryLine shows what the section actually asks Jira for. Two tabs can
 // look alike and query entirely different things, and sprintPrefix narrows the
 // result after the query, so it belongs here too or the row count looks wrong
 // for the JQL beside it.
 //
-// The JQL is folded onto one line: a config may write it across several lines
-// with YAML's >- and the newlines would break the frame.
-func renderQueryBox(m Model, width int) string {
+// One line, no frame. As a bordered box this cost three of the screen's lines
+// and still truncated the JQL, for a fact that does not change while you are on
+// the tab. The JQL is folded onto that line because a config may write it
+// across several with YAML's >- and the newlines would break the layout.
+func renderQueryLine(m Model, width int) string {
 	sec := m.sections[m.active].cfg
 	query := strings.Join(strings.Fields(sec.JQL), " ")
 	if sec.SprintPrefix != "" {
 		query += "  ·  sprint ^ " + sec.SprintPrefix
 	}
 
-	// 2 for the frame's own columns, 2 for the padding inside it.
-	inner := maxInt(0, width-4)
+	// Indented to the column header's left edge, so the chrome above the table
+	// shares one margin.
+	indent := strings.Repeat(" ", cursorMarkerWidth)
 	st := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4"))).
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 1).
-		Width(inner)
-	return st.Render(Truncate(query, inner))
+		Foreground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4")))
+	return st.Render(indent + Truncate("jql  "+query, maxInt(0, width-cursorMarkerWidth)))
 }
 
 // renderColumnHeader labels the columns renderRow lays out, using the same
@@ -144,39 +151,50 @@ func renderColumnHeader(width int) string {
 		runewidth.FillRight("T", colIcon),
 		runewidth.FillRight("STATUS", colStatus),
 		runewidth.FillLeft("SP", colPoints),
-		runewidth.FillRight("PRIO", colPriority),
 		runewidth.FillRight("ASSIGNEE", colAssignee),
 		runewidth.FillLeft("AGE", colUpdated),
+		"SUMMARY",
 	}, " ")
 	return Truncate(header, width)
 }
 
-// renderRow lays out one issue. The summary takes whatever is left, so a
-// narrow terminal loses summary text rather than the key or the status.
+// renderRow lays out one issue on one line, the summary taking whatever the
+// fixed columns leave. Two lines per issue plus a rule meant a 41-issue backlog
+// showed eleven of them; the summary is the one field worth the width, and
+// everything trimmed from here is a keypress away in the preview.
 //
 // Padding goes through runewidth, not fmt: `%-*s` pads to a rune count, so a
 // Japanese summary would end up the wrong number of cells wide and the columns
 // would stop lining up between rows.
 func renderRow(i Issue, width int, now time.Time) string {
-	meta := strings.Join([]string{
+	line := strings.Join([]string{
 		runewidth.FillRight(Truncate(i.Key, colKey), colKey),
 		runewidth.FillRight(TypeIcon(i.Type), colIcon),
 		runewidth.FillRight(Truncate(i.Status, colStatus), colStatus),
 		runewidth.FillLeft(StoryPointText(i.StoryPoints), colPoints),
-		runewidth.FillRight(Truncate(orDefault(i.Priority, "-"), colPriority), colPriority),
 		runewidth.FillRight(Truncate(i.AssigneeName(), colAssignee), colAssignee),
 		runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated),
+		PriorityChip(i.Priority) + Truncate(i.Summary, maxInt(0, width-rowFixedWidth-runewidth.StringWidth(PriorityChip(i.Priority)))),
 	}, " ")
 
-	// The summary is indented under the meta line so the eye can tell the two
-	// apart at a glance, the way gh-dash indents a PR title under its metadata.
-	summary := "  " + Truncate(i.Summary, maxInt(0, width-2))
-
-	// The meta columns alone are 50 cells, so a very narrow terminal cannot fit
-	// them. Cutting each line keeps the invariant that a row never draws wider
+	// The fixed columns alone are 46 cells, so a very narrow terminal cannot fit
+	// them. Cutting the line keeps the invariant that a row never draws wider
 	// than the width it was handed - without it the table spills past the pane
 	// and the preview beside it gets pushed off screen.
-	return Truncate(meta, width) + "\n" + Truncate(summary, width)
+	return Truncate(line, width)
+}
+
+// PriorityChip prefixes the summary with a priority only when the priority says
+// something. Every issue Jira creates is Medium unless someone changed it, so a
+// column of it was 8 cells of the same word on every row; as a chip the field
+// costs nothing until it is worth reading.
+func PriorityChip(priority string) string {
+	switch priority {
+	case "", "Medium", "medium":
+		return ""
+	default:
+		return "[" + priority + "] "
+	}
 }
 
 // StoryPointText keeps "unestimated" distinct from a real estimate. Rendering
@@ -197,10 +215,15 @@ func renderFooter(m Model) string {
 		return st.footer.Render("error: " + s.err.Error() + " · r:retry")
 	}
 
+	// RelTime says "now" for anything under a minute, and "updated now ago" is
+	// not a phrase, so the freshest case gets its own wording.
 	age := RelTime(m.now(), s.fetchedAt)
 	state := "updated " + age + " ago"
-	if s.fetchedAt.IsZero() {
+	switch {
+	case s.fetchedAt.IsZero():
 		state = "never fetched"
+	case age == "now":
+		state = "updated just now"
 	}
 	if s.loading {
 		// The frame goes before the word: a static "refreshing" gave no sign the
@@ -263,28 +286,16 @@ func (m Model) View() string {
 	// the row's budget or every line would be two cells wider than the pane it
 	// was measured for.
 	rowWidth := tableWidth - cursorMarkerWidth
-	rule := st.footer.Render(" " + strings.Repeat("─", maxInt(0, tableWidth-1)))
 	for idx, issue := range s.visible() {
-		// The arrow marks the row once, on its first line; the fill is what
-		// carries the selection across both. Repeating the arrow on the summary
-		// line read as a second, pointless pointer.
+		// One line per issue, so the selected row's fill is the only separator
+		// needed: the rules that used to sit between rows were there to keep a
+		// two-line row from reading as two issues.
 		style := st.row
 		marker := "  "
 		if idx == s.cursor {
 			style, marker = st.selectedRow, "→ "
 		}
-		for i, line := range strings.Split(renderRow(issue, rowWidth, now), "\n") {
-			prefix := marker
-			if i > 0 {
-				prefix = strings.Repeat(" ", cursorMarkerWidth)
-			}
-			rows = append(rows, style.Render(prefix+line))
-		}
-		// A rule between rows, not after the last one: with two-line rows the
-		// next issue's meta line otherwise reads as part of this summary.
-		if idx < len(s.visible())-1 {
-			rows = append(rows, rule)
-		}
+		rows = append(rows, style.Render(marker+renderRow(issue, rowWidth, now)))
 	}
 	if len(rows) == 0 {
 		// "(no issues)" and "loading" are different facts, and during a refresh
@@ -322,10 +333,13 @@ func (m Model) View() string {
 	// across the whole width, the query the tab is showing, then the column
 	// names. verticalChrome has to match how many lines this adds, or the
 	// preview viewport is sized for a taller pane than it gets.
+	// The rule spans the table, not the terminal. At full width it ran on across
+	// the preview - which is its own bordered box, so the rule met nothing on the
+	// far side and the screen showed four horizontal lines at four widths.
 	sections := []string{
 		renderTabs(m),
-		st.footer.Render(strings.Repeat("━", maxInt(0, m.width))),
-		renderQueryBox(m, tableWidth),
+		st.footer.Render(strings.Repeat("━", maxInt(0, tableWidth))),
+		renderQueryLine(m, tableWidth),
 		st.footer.Render(strings.Repeat(" ", cursorMarkerWidth) + renderColumnHeader(rowWidth)),
 		body,
 	}

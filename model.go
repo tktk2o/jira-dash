@@ -192,11 +192,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		// The viewport starts 0x0, so without this the preview pane renders
 		// nothing at all. What is subtracted is chrome the viewport does not
-		// draw itself: the border View wraps it in (2 cells each way), the
-		// single-column gap between the panes, and vertically the tab strip,
-		// the footer and the filter line.
+		// draw itself: the border View wraps it in (2 cells each way) and the
+		// padding inside that border, the single-column gap between the panes,
+		// and vertically the tab strip, the footer and the filter line.
 		previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
-		m.detail.Width = maxInt(0, previewWidth-borderChrome-paneGap)
+		m.detail.Width = maxInt(0, previewWidth-borderChrome-borderPadding-paneGap)
 		m.detail.Height = maxInt(0, m.height-verticalChrome-borderChrome)
 		return m, nil
 

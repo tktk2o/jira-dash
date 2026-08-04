@@ -88,35 +88,36 @@ func TestRenderRowKeepsKeyWhenNarrow(t *testing.T) {
 	}
 }
 
-// Columns only line up if padding counts display cells. A Japanese summary is
-// two cells per rune, so rune-count padding would make this row a different
-// width from the ASCII one.
-func TestRenderRowWidthIsIndependentOfScript(t *testing.T) {
+// Columns only line up if padding counts display cells. A Japanese assignee is
+// two cells per rune, so rune-count padding would start the summary column at a
+// different place on this row than on the ASCII one.
+func TestRenderRowColumnsAlignAcrossScripts(t *testing.T) {
 	now := time.Now()
-	ascii := Issue{Key: "ABC-1", Summary: "plain summary", Status: "Open", Type: "Task"}
-	japanese := Issue{Key: "ABC-2", Summary: "日本語の要約です", Status: "Open", Type: "Task"}
+	ascii := Issue{Key: "ABC-1", Status: "Open", Type: "Task", Assignee: ptr("Alex Kim")}
+	japanese := Issue{Key: "ABC-2", Status: "Open", Type: "Task", Assignee: ptr("琢人 加藤")}
 
-	a := runewidth.StringWidth(metaLineOf(renderRow(ascii, 100, now)))
-	b := runewidth.StringWidth(metaLineOf(renderRow(japanese, 100, now)))
+	// The summary is empty on both, so whatever the row measures is exactly where
+	// the fixed columns end.
+	a := runewidth.StringWidth(renderRow(ascii, 100, now))
+	b := runewidth.StringWidth(renderRow(japanese, 100, now))
 	if a != b {
-		t.Errorf("meta line widths differ: ascii %d vs japanese %d", a, b)
+		t.Errorf("summary column starts at %d cells for ascii but %d for japanese", a, b)
 	}
 }
 
 // A row must never draw wider than the width it was handed, or the table
 // spills past its pane and pushes the preview off screen. The fixed columns
-// alone are 35 cells, so the narrow cases are the interesting ones.
+// alone are 46 cells, so the narrow cases are the interesting ones.
 func TestRenderRowNeverExceedsItsWidth(t *testing.T) {
 	now := time.Now()
-	issue := Issue{Key: "ABC-1234", Summary: strings.Repeat("長い要約", 40), Status: "In Progress", Type: "Bug"}
+	issue := Issue{
+		Key: "ABC-1234", Summary: strings.Repeat("長い要約", 40),
+		Status: "In Progress", Type: "Bug", Priority: "Highest",
+	}
 
-	// Measured per line: a row is two of them, so the whole string is naturally
-	// wider than the pane.
-	for _, width := range []int{120, 100, 60, 45, 40, 20, 5} {
-		for i, line := range strings.Split(renderRow(issue, width, now), "\n") {
-			if got := runewidth.StringWidth(line); got > width {
-				t.Errorf("renderRow at width %d: line %d rendered %d cells", width, i, got)
-			}
+	for _, width := range []int{120, 100, 60, 46, 45, 40, 20, 5} {
+		if got := runewidth.StringWidth(renderRow(issue, width, now)); got > width {
+			t.Errorf("renderRow at width %d rendered %d cells", width, got)
 		}
 	}
 }
@@ -323,33 +324,36 @@ func TestEveryTabCarriesItsCount(t *testing.T) {
 
 // The JQL is what a section *is*, and it is otherwise invisible: two tabs can
 // look alike and query completely different things.
-func TestQueryBoxShowsTheJQLAndThePrefix(t *testing.T) {
+func TestQueryLineShowsTheJQLAndThePrefix(t *testing.T) {
 	m := settled(newTestModel(t, fakeSearcher{}))
 	m.sections[0].cfg.SprintPrefix = "Team"
 
-	box := renderQueryBox(m, 120)
+	line := renderQueryLine(m, 120)
 
-	if !strings.Contains(box, "assignee = currentUser()") {
-		t.Errorf("box should carry the JQL: %q", box)
+	if !strings.Contains(line, "assignee = currentUser()") {
+		t.Errorf("the query line should carry the JQL: %q", line)
 	}
-	if !strings.Contains(box, "Team") {
-		t.Errorf("box should carry the sprint prefix, which narrows the JQL: %q", box)
-	}
-	if !strings.Contains(box, "╭") || !strings.Contains(box, "╰") {
-		t.Errorf("box should be framed: %q", box)
+	if !strings.Contains(line, "Team") {
+		t.Errorf("it should carry the sprint prefix, which narrows the JQL: %q", line)
 	}
 }
 
-// A long JQL must not widen the box past the pane it was measured for.
-func TestQueryBoxNeverExceedsItsWidth(t *testing.T) {
+// As a bordered box this spent three of the screen's lines - and truncated the
+// JQL anyway - on a fact that never changes while you are on the tab.
+func TestQueryLineIsOneUnframedLine(t *testing.T) {
 	m := settled(newTestModel(t, fakeSearcher{}))
 	m.sections[0].cfg.JQL = strings.Repeat("project = ABCDEF AND ", 20)
 
 	for _, w := range []int{40, 80, 120} {
-		for _, line := range strings.Split(renderQueryBox(m, w), "\n") {
-			if got := runewidth.StringWidth(line); got > w {
-				t.Errorf("width %d: line is %d cells: %q", w, got, line)
-			}
+		out := renderQueryLine(m, w)
+		if strings.Contains(out, "\n") {
+			t.Errorf("width %d: the query should stay on one line: %q", w, out)
+		}
+		if strings.ContainsAny(out, "╭╰│") {
+			t.Errorf("width %d: the query line should carry no frame: %q", w, out)
+		}
+		if got := runewidth.StringWidth(out); got > w {
+			t.Errorf("width %d: line is %d cells: %q", w, got, out)
 		}
 	}
 }
@@ -361,75 +365,84 @@ func TestColumnHeaderAlignsWithTheRow(t *testing.T) {
 	if got := runewidth.StringWidth(header); got > 120 {
 		t.Errorf("header is %d cells, want at most 120", got)
 	}
-	if !strings.Contains(header, "KEY") || !strings.Contains(header, "STATUS") {
-		t.Errorf("header should name its columns: %q", header)
+	for _, want := range []string{"KEY", "STATUS", "SUMMARY"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header should name the %s column: %q", want, header)
+		}
 	}
 }
 
-// A row is two lines like gh-dash's: everything that fits a column on the meta
-// line, and the summary on its own line where it is not competing for width.
-// That is the point - a Japanese summary was being cut at ~60 cells before.
-func TestRenderRowIsTwoLinesWithTheSummaryOnItsOwn(t *testing.T) {
+// One line per issue. Two lines plus a rule between them meant three lines each,
+// so a 41-issue backlog showed eleven of them.
+func TestRenderRowIsOneLine(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	issue := Issue{
 		Key: "ABC-1234", Type: "Story", Status: "In Progress",
-		Summary:  "トークン更新で 500 が出る問題の調査と暫定対処までを含む長いタイトル",
-		Priority: "High", StoryPoints: fptr(3),
+		Summary: "トークン更新で 500 が出る問題の調査", StoryPoints: fptr(3),
 	}
 	issue.Assignee = ptr("琢人 加藤")
 	issue.Updated.Time = now.Add(-2 * time.Hour)
 
-	lines := strings.Split(renderRow(issue, 100, now), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("got %d lines, want 2: %q", len(lines), lines)
-	}
+	row := renderRow(issue, 100, now)
 
-	meta := lines[0]
-	for _, want := range []string{"ABC-1234", "In Progress", "2h", "High", "3", "加藤"} {
-		if !strings.Contains(meta, want) {
-			t.Errorf("meta line missing %q: %q", want, meta)
-		}
+	if strings.Contains(row, "\n") {
+		t.Fatalf("a row should be one line: %q", row)
 	}
-	if !strings.Contains(lines[1], "暫定対処までを含む長いタイトル") {
-		t.Errorf("the summary should survive uncut on its own line: %q", lines[1])
-	}
-	for i, line := range lines {
-		if got := runewidth.StringWidth(line); got > 100 {
-			t.Errorf("line %d is %d cells, want at most 100", i, got)
+	for _, want := range []string{"ABC-1234", "In Progress", "2h", "3", "加藤", "トークン更新"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("row missing %q: %q", want, row)
 		}
 	}
 }
 
-// Story points and priority are often unset, and "0SP" or an empty gap reads as
-// data. An absent value is a dash, like the assignee already was.
-func TestRenderRowMarksAbsentFieldsWithADash(t *testing.T) {
+// Story points are often unset, and "0" reads as a real estimate.
+func TestRenderRowMarksAbsentStoryPointsWithADash(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	meta := strings.Split(renderRow(Issue{Key: "ABC-1"}, 100, now), "\n")[0]
+	row := renderRow(Issue{Key: "ABC-1"}, 100, now)
 
-	if strings.Contains(meta, "0") {
-		t.Errorf("an unset story point count must not render as 0: %q", meta)
+	if strings.Contains(row, "0") {
+		t.Errorf("an unset story point count must not render as 0: %q", row)
 	}
-	if strings.Count(meta, "-") < 2 {
-		t.Errorf("unset priority and story points should both show a dash: %q", meta)
+	if !strings.Contains(row, "-") {
+		t.Errorf("unset story points should show a dash: %q", row)
 	}
 }
 
-// The separator between rows is what makes two-line rows readable; without it
-// the meta line of the next issue reads as part of the previous summary.
-func TestViewSeparatesTwoLineRows(t *testing.T) {
-	m := settled(newTestModel(t, fakeSearcher{}))
-	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("A-1", "A-2"), at: fixedNow()()})
+// Every issue Jira creates is Medium unless someone changed it, so as a column
+// it was the same word on every row. It earns its space only when it differs.
+func TestPriorityShowsOnlyWhenItIsNotTheDefault(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+
+	medium := renderRow(Issue{Key: "ABC-1", Summary: "x", Priority: "Medium"}, 100, now)
+	if strings.Contains(medium, "Medium") {
+		t.Errorf("the default priority should not be drawn: %q", medium)
+	}
+
+	high := renderRow(Issue{Key: "ABC-2", Summary: "x", Priority: "Highest"}, 100, now)
+	if !strings.Contains(high, "Highest") {
+		t.Errorf("a priority worth reading should be drawn: %q", high)
+	}
+}
+
+// The rule under the tab strip used to span the terminal while everything below
+// it spanned the table, so it crossed over the preview - which is its own
+// bordered box - and met nothing on the far side.
+func TestChromeAboveTheTableSharesTheTableWidth(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("A-1"), at: fixedNow()()})
 	m = settled(next.(Model))
 
-	if !strings.Contains(m.View(), "─") {
-		t.Errorf("rows should be separated by a rule: %q", m.View())
+	tableWidth := m.width - int(float64(m.width)*m.cfg.Defaults.Preview.Width)
+	for _, line := range strings.Split(m.View(), "\n") {
+		if !strings.Contains(line, "━") {
+			continue
+		}
+		if got := runewidth.StringWidth(line); got != tableWidth {
+			t.Errorf("the rule is %d cells, want the table's %d: %q", got, tableWidth, line)
+		}
 	}
 }
 
 func ptr(s string) *string { return &s }
 
 func fptr(f float64) *float64 { return &f }
-
-// metaLineOf takes the first of a row's two lines: the one whose columns have to
-// line up between rows.
-func metaLineOf(row string) string { return strings.Split(row, "\n")[0] }
