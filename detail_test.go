@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Moving the cursor must not fire a fetch per keystroke: each jira call costs
@@ -93,6 +95,25 @@ func TestLoadIssueSurfacesFetchError(t *testing.T) {
 	msg := m.loadIssue("ABC-9")().(issueLoadedMsg)
 	if msg.err == nil {
 		t.Fatal("want the searcher error")
+	}
+}
+
+// The viewport is created 0x0, so a resize has to give it a size or the
+// preview pane renders nothing however good the markdown is.
+func TestWindowSizeGivesTheDetailPaneASize(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	m = next.(Model)
+
+	if m.detail.Width <= 0 {
+		t.Errorf("detail width = %d, want the preview's share of 200", m.detail.Width)
+	}
+	if m.detail.Height <= 0 {
+		t.Errorf("detail height = %d, want most of 40", m.detail.Height)
+	}
+	if m.detail.Width >= m.width {
+		t.Errorf("detail width = %d, should be a fraction of %d", m.detail.Width, m.width)
 	}
 }
 

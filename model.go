@@ -145,6 +145,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// The viewport starts 0x0, so without this the preview pane renders
+		// nothing at all. The -2 is the gap View puts between the panes; the
+		// -3 is the tab strip, the footer and the filter line.
+		previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
+		m.detail.Width = maxInt(0, previewWidth-2)
+		m.detail.Height = maxInt(0, m.height-3)
 		return m, nil
 
 	case fetchedMsg:
