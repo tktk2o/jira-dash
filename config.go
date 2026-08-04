@@ -24,6 +24,11 @@ type Section struct {
 	Title string `yaml:"title"`
 	JQL   string `yaml:"jql"`
 	Limit int    `yaml:"limit"`
+
+	// SprintPrefix narrows the section to issues in an active sprint whose name
+	// starts with this string - the one thing the JQL cannot express, since the
+	// board renames its sprint every iteration. Omitted means no narrowing.
+	SprintPrefix string `yaml:"sprintPrefix"`
 }
 
 type Defaults struct {

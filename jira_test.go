@@ -127,3 +127,73 @@ func TestCLISearchIsCancellable(t *testing.T) {
 
 // CLI must satisfy Searcher, so the model can take a fake in tests.
 var _ Searcher = CLI{}
+
+// A rotating sprint name ("Deigo 0803-0807") cannot be matched in JQL: the
+// sprint field takes no LIKE operator, and `sprint ~ "Deigo"` was measured
+// returning 2 of the sprint's 15 issues. The prefix match therefore happens
+// here, which needs the sprint names and states out of the search JSON.
+func TestParseSearchJSONKeepsSprintNamesAndStates(t *testing.T) {
+	issues, err := ParseSearchJSON([]byte(`{"total":1,"results":[{
+		"key":"ABC-1",
+		"sprint":[
+			{"name":"Team 0721-0724","state":"closed"},
+			{"name":"Team 0803-0807","state":"active"}
+		]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := issues[0].Sprint
+	if len(got) != 2 {
+		t.Fatalf("sprints = %d, want 2", len(got))
+	}
+	if got[1].Name != "Team 0803-0807" || got[1].State != "active" {
+		t.Errorf("second sprint = %+v", got[1])
+	}
+}
+
+// An issue with no sprint must parse, not fail: most projects do not use them.
+func TestParseSearchJSONAcceptsAMissingSprint(t *testing.T) {
+	issues, err := ParseSearchJSON([]byte(`{"total":1,"results":[{"key":"ABC-1"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues[0].Sprint) != 0 {
+		t.Errorf("sprints = %+v, want none", issues[0].Sprint)
+	}
+}
+
+func TestInActiveSprintPrefix(t *testing.T) {
+	inSprint := Issue{Sprint: []Sprint{
+		{Name: "Team 0727-0731", State: "closed"},
+		{Name: "Team 0803-0807", State: "active"},
+	}}
+	otherTeam := Issue{Sprint: []Sprint{{Name: "Other 0803-0807", State: "active"}}}
+	// The prefix must not match a sprint the team has already finished, or a
+	// closed sprint would keep an issue on the board forever.
+	closedOnly := Issue{Sprint: []Sprint{{Name: "Team 0727-0731", State: "closed"}}}
+	// A parked issue sits in a future sprint used as a named backlog; it is not
+	// in the active sprint.
+	parked := Issue{Sprint: []Sprint{{Name: "Team backlog", State: "future"}}}
+
+	for name, tc := range map[string]struct {
+		issue Issue
+		want  bool
+	}{
+		"active sprint with the prefix": {inSprint, true},
+		"another team's sprint":         {otherTeam, false},
+		"only a closed sprint":          {closedOnly, false},
+		"a future backlog sprint":       {parked, false},
+		"no sprint at all":              {Issue{}, false},
+	} {
+		if got := tc.issue.InActiveSprintPrefix("Team"); got != tc.want {
+			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// An empty prefix means the section did not ask for one, so nothing is dropped.
+func TestInActiveSprintPrefixIsOffWhenEmpty(t *testing.T) {
+	if !(Issue{}).InActiveSprintPrefix("") {
+		t.Error("an empty prefix should keep every issue")
+	}
+}

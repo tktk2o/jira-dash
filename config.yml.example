@@ -26,6 +26,25 @@ jiraSections:
   #       project = ABC AND sprint in openSprints() AND statusCategory != Done
   #       ORDER BY updated DESC
   #     limit: 30
+  #     # A board often runs several teams' sprints at once, and JQL cannot pick
+  #     # one out by name: the sprint field has no LIKE operator, and `sprint ~`
+  #     # was measured returning 2 of a 15-issue sprint. sprintPrefix keeps only
+  #     # issues in an *active* sprint whose name starts with this string, so a
+  #     # board that renames its sprint every iteration ("Team 0803-0807") needs
+  #     # no weekly edit here. Closed and future sprints never match.
+  #     #
+  #     # The prefix is applied to what the query returned, so `limit` has to
+  #     # cover the *unfiltered* result: a board with four active sprints needs
+  #     # a limit big enough for all four, or the rows you want may never be
+  #     # fetched.
+  #     sprintPrefix: Team
+  #
+  # A future sprint used as a named backlog has a fixed name, so it needs no
+  # prefix - match it exactly:
+  #
+  #   - title: Backlog
+  #     jql: project = ABC AND sprint = "Team backlog" ORDER BY updated DESC
+  #     limit: 40
 
 defaults:
   preview:

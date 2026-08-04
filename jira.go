@@ -54,6 +54,38 @@ type Issue struct {
 	Project  struct {
 		Key string `json:"key"`
 	} `json:"project"`
+
+	// An issue carries every sprint it has ever been in, closed ones included,
+	// which is why the state matters as much as the name.
+	Sprint []Sprint `json:"sprint"`
+}
+
+// Sprint is the part of a sprint a section needs to match on. A board's active
+// sprint is renamed every iteration ("Team 0803-0807"), and JQL cannot match a
+// name by prefix: the sprint field takes no LIKE operator, and `sprint ~ "Team"`
+// was measured returning 2 of that sprint's 15 issues. So the match happens
+// here instead.
+type Sprint struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// InActiveSprintPrefix reports whether the issue sits in a currently active
+// sprint whose name starts with prefix. The state check is the point: a closed
+// sprint with the same prefix would otherwise pin an issue to the board
+// forever, and a future sprint is a named backlog, not the current iteration.
+//
+// An empty prefix means the section never asked to be narrowed.
+func (i Issue) InActiveSprintPrefix(prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	for _, s := range i.Sprint {
+		if s.State == "active" && strings.HasPrefix(s.Name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (i Issue) AssigneeName() string {

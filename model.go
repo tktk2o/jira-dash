@@ -30,18 +30,23 @@ type sectionState struct {
 	filter    string
 }
 
-// visible applies the local filter. The filter never re-queries Jira: the
-// config file owns what a section *is*, the filter only narrows what you are
-// looking at right now.
+// visible applies the section's sprint prefix and then the local filter.
+// Neither re-queries Jira: the JQL owns what a section *is*, the prefix trims
+// what that query cannot express, and the filter narrows what you are looking
+// at right now. Both are applied here rather than at fetch time so the cache
+// keeps the full result and editing either takes effect without a round trip.
 func (s sectionState) visible() []Issue {
-	if s.filter == "" {
+	if s.filter == "" && s.cfg.SprintPrefix == "" {
 		return s.issues
 	}
 	q := strings.ToLower(s.filter)
 	out := make([]Issue, 0, len(s.issues))
 	for _, i := range s.issues {
+		if !i.InActiveSprintPrefix(s.cfg.SprintPrefix) {
+			continue
+		}
 		haystack := strings.ToLower(i.Key + " " + i.Summary + " " + i.Status)
-		if strings.Contains(haystack, q) {
+		if q == "" || strings.Contains(haystack, q) {
 			out = append(out, i)
 		}
 	}

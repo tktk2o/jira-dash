@@ -321,3 +321,22 @@ func press(m Model, key string) Model {
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 	return next.(Model)
 }
+
+// The prefix narrows a section the same way the local filter does, so the tab
+// count and the cursor both see the narrowed list.
+func TestSprintPrefixNarrowsTheSection(t *testing.T) {
+	mine := Issue{Key: "ABC-1", Sprint: []Sprint{{Name: "Team 0803-0807", State: "active"}}}
+	theirs := Issue{Key: "ABC-2", Sprint: []Sprint{{Name: "Other 0803-0807", State: "active"}}}
+
+	s := sectionState{cfg: Section{SprintPrefix: "Team"}, issues: []Issue{mine, theirs}}
+	got := s.visible()
+	if len(got) != 1 || got[0].Key != "ABC-1" {
+		t.Fatalf("visible = %+v, want only ABC-1", got)
+	}
+
+	// The local filter composes with it rather than replacing it.
+	s.filter = "abc-2"
+	if got := s.visible(); len(got) != 0 {
+		t.Errorf("filter and prefix should both apply: %+v", got)
+	}
+}
