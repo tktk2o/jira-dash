@@ -50,6 +50,10 @@ jiraSections:
   #     limit: 40
 
 defaults:
+  # keybindings の走る作業ディレクトリ。ボードとリポジトリは対応するので
+  # section ごとに書けるが、全タブが同じ checkout を見るならここで足りる。
+  # 起動時に存在を確認する（打った瞬間ではなく）ので、typo はここで落ちる。
+  dir: ~/src/github.com/example/some-repo
   preview:
     open: true
     position: right
@@ -74,7 +78,7 @@ keybindings:
     - key: R
       name: claude
       command: >-
-        tmux new-window -n {{.IssueKey}}
+        tmux new-window -c {{.Dir}} -n {{.IssueKey}}
         claude --permission-mode auto {{.IssueKey}}
 
     #: 指示を打って Claude に渡す（課題・本文つき、新しい tmux ウィンドウ）
@@ -82,7 +86,7 @@ keybindings:
       name: ask claude
       prompt: true
       command: >-
-        tmux new-window -n {{.IssueKey}}
+        tmux new-window -c {{.Dir}} -n {{.IssueKey}}
         claude --permission-mode auto {{.Prompt}}
 
 theme:

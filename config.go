@@ -43,11 +43,19 @@ type Section struct {
 	// starts with this string - the one thing the JQL cannot express, since the
 	// board renames its sprint every iteration. Omitted means no narrowing.
 	SprintPrefix string `yaml:"sprintPrefix"`
+
+	// Dir is where this tab's keybindings run: the checkout the issues in it are
+	// about. It is per-section because that is the grain the answer has - a board
+	// belongs to a repository - while a keybinding is written once for every tab.
+	// Falls back to defaults.dir. A leading ~ is expanded at load.
+	Dir string `yaml:"dir"`
 }
 
 type Defaults struct {
 	Preview Preview `yaml:"preview"`
 	Limit   int     `yaml:"limit"`
+	// Dir is the fallback working directory for sections that do not name one.
+	Dir string `yaml:"dir"`
 }
 
 // Open is a pointer so that an omitted key and an explicit `open: false` are
@@ -134,6 +142,8 @@ func LoadConfig(path string) (*Config, error) {
 		c.Defaults.Preview.Width = defaultPreviewWidth
 	}
 
+	home, _ := os.UserHomeDir()
+	c.Defaults.Dir = expandHome(c.Defaults.Dir, home)
 	for i, s := range c.Sections {
 		if s.Title == "" {
 			return nil, fmt.Errorf("%s: jiraSections[%d] has no title", path, i)
@@ -144,6 +154,19 @@ func LoadConfig(path string) (*Config, error) {
 		if s.Limit == 0 {
 			c.Sections[i].Limit = c.Defaults.Limit
 		}
+
+		dir := expandHome(orDefault(s.Dir, c.Defaults.Dir), home)
+		// Checked at load, not when a key is pressed: a typo'd path would otherwise
+		// surface as whatever the command says about a directory it cannot enter,
+		// long after the file that is actually wrong was edited.
+		if dir != "" {
+			if info, err := os.Stat(dir); err != nil {
+				return nil, fmt.Errorf("%s: section %q dir: %w", path, s.Title, err)
+			} else if !info.IsDir() {
+				return nil, fmt.Errorf("%s: section %q dir is not a directory: %s", path, s.Title, dir)
+			}
+		}
+		c.Sections[i].Dir = dir
 	}
 
 	// Every configured key goes through the same two checks, and through one

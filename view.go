@@ -783,12 +783,19 @@ func (m Model) runUserKeybindingWith(key, instruction string) (tea.Model, tea.Cm
 		if instruction != "" {
 			vars = NewAskVars(issue, AskPrompt(issue, m.detailBody, instruction))
 		}
-		rendered, err := RenderCommand(kb.Command, vars)
+		dir := m.sections[m.active].cfg.Dir
+		rendered, err := RenderCommand(kb.Command, vars.WithDir(dir))
 		if err != nil {
 			m.status = err.Error()
 			return m, nil
 		}
-		return m, tea.ExecProcess(exec.Command("sh", "-c", rendered), func(err error) tea.Msg {
+		cmd := exec.Command("sh", "-c", rendered)
+		// The command's own cwd as well as {{.Dir}}, so a command that does not
+		// spawn anything - `git log`, an editor - lands in the right checkout
+		// without the config having to cd. LoadConfig has already checked the path
+		// exists, so this cannot fail the command with a directory error.
+		cmd.Dir = dir
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return commandRanMsg{key: kb.Key, err: err}
 		})
 	}

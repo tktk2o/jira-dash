@@ -230,3 +230,51 @@ keybindings:
 		t.Error("a keybinding with no command should be rejected")
 	}
 }
+
+// A board belongs to a repository, so the working directory is per-section - but
+// when every tab looks at the same checkout, defaults.dir should cover them.
+func TestSectionDirFallsBackToDefaults(t *testing.T) {
+	dir := t.TempDir()
+	other := t.TempDir()
+	cfg, err := LoadConfig(writeConfig(t, "defaults:\n  dir: "+dir+"\njiraSections:\n"+
+		"  - title: A\n    jql: project = A\n"+
+		"  - title: B\n    jql: project = B\n    dir: "+other+"\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := cfg.Sections[0].Dir; got != dir {
+		t.Errorf("section A dir = %q, want the default %q", got, dir)
+	}
+	if got := cfg.Sections[1].Dir; got != other {
+		t.Errorf("section B dir = %q, want its own %q", got, other)
+	}
+}
+
+// Checked at load rather than when a key is pressed: otherwise a typo surfaces
+// as whatever the command says about a directory it cannot enter, long after the
+// file that is wrong was edited.
+func TestConfigRefusesADirThatIsNotThere(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t,
+		"jiraSections:\n  - title: A\n    jql: project = A\n    dir: /nope/definitely/not/here\n"))
+	if err == nil {
+		t.Fatal("want an error for a missing dir")
+	}
+	if !strings.Contains(err.Error(), "A") {
+		t.Errorf("the error should name the section: %v", err)
+	}
+}
+
+// A file is not somewhere a command can run.
+func TestConfigRefusesADirThatIsAFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(writeConfig(t,
+		"jiraSections:\n  - title: A\n    jql: project = A\n    dir: "+file+"\n"))
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("want a not-a-directory error, got %v", err)
+	}
+}

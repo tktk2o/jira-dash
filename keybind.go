@@ -25,10 +25,20 @@ type IssueVars struct {
 	// it on such a key gets an empty argument rather than a template error - the
 	// same shape as an issue with no assignee.
 	Prompt string
+	// Dir is the active section's working directory. Commands that spawn something
+	// elsewhere need it as an argument rather than as an inherited cwd: `tmux
+	// new-window` takes the cwd from -c, not from the process that ran it.
+	Dir string
 }
 
 func NewIssueVars(i Issue) IssueVars {
 	return NewAskVars(i, "")
+}
+
+// WithDir returns the vars with the section's working directory filled in.
+func (v IssueVars) WithDir(dir string) IssueVars {
+	v.Dir = shellQuote(dir)
+	return v
 }
 
 // NewAskVars is NewIssueVars plus the assembled prompt. Both go through the same
@@ -43,6 +53,9 @@ func NewAskVars(i Issue, prompt string) IssueVars {
 		Assignee:   shellQuote(i.AssigneeName()),
 		ProjectKey: shellQuote(i.Project.Key),
 		Prompt:     shellQuote(prompt),
+		// Quoted even when empty, so a command using it in a place that needs an
+		// argument gets '' rather than nothing at all and a shifted argv.
+		Dir: shellQuote(""),
 	}
 }
 

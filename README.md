@@ -50,6 +50,30 @@ ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 | `?` | ヘルプ |
 | `q` | 終了 |
 
+### 作業ディレクトリ（`dir`）
+
+キーバインドが走るディレクトリは `defaults.dir`、または section ごとの `dir` で
+決める（section 側が優先）。ボードとリポジトリは対応するので**タブの粒度**が正しく、
+キーバインド側は1回書けば全タブで使い回せる。
+
+```yaml
+defaults:
+  dir: ~/src/github.com/example/some-repo
+jiraSections:
+  - title: Other board
+    jql: project = OTHER
+    dir: ~/src/github.com/example/other-repo   # section が defaults に勝つ
+```
+
+これは2通りに効く。コマンド自身の cwd になり、かつ `{{.Dir}}` で参照できる。
+両方あるのは、`tmux new-window` が**cwd を継承せず `-c` で受け取る**ため —
+新しいウィンドウを開く類のコマンドには `-c {{.Dir}}` が必要で、`git log` の
+ような自前で完結するコマンドには cwd だけで足りる。
+
+先頭の `~` は展開する。パスの存在は**起動時に**確認する（キーを押した瞬間ではなく）
+— typo が「入れないディレクトリ」についてのコマンド側のエラーとして、ずっと後に
+出てくるのを避けるため。
+
 `o`（ブラウザで開く）などは設定の `keybindings.issues` 次第。`{{...}}` はシェル
 クォート済みで埋まるので、変数を自分でクォートしてはいけない。設定したキーは
 `create` の分も含めて `?` に出る（`name:` があればその名前、無ければコマンド本文）。

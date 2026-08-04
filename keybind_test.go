@@ -94,3 +94,29 @@ func TestNewIssueVarsFallsBackForMissingAssignee(t *testing.T) {
 		t.Errorf("assignee = %q, want the quoted '-'", got)
 	}
 }
+
+// tmux new-window does not inherit a cwd - it takes one from -c - so the working
+// directory has to be available as a variable, not only as the command's cwd.
+func TestDirIsAvailableAsAQuotedVariable(t *testing.T) {
+	vars := NewIssueVars(Issue{Key: "ABC-1"}).WithDir("/path/with a space/repo")
+
+	got, err := RenderCommand("tmux new-window -c {{.Dir}}", vars)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != `tmux new-window -c '/path/with a space/repo'` {
+		t.Errorf("rendered = %s", got)
+	}
+}
+
+// A section with no dir must render as an empty argument rather than as nothing,
+// or the flag it belongs to swallows whatever came next.
+func TestAnAbsentDirStillRendersAnArgument(t *testing.T) {
+	got, err := RenderCommand("tmux new-window -c {{.Dir}} -n x", NewIssueVars(Issue{Key: "ABC-1"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != `tmux new-window -c '' -n x` {
+		t.Errorf("rendered = %s", got)
+	}
+}
