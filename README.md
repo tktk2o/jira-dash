@@ -22,6 +22,11 @@
 ```bash
 go build -o ~/.local/bin/jira-dash .
 
+# 短縮名。シェルのエイリアスにしないのは、dotfiles の .zshrc が公開リポジトリで
+# 追跡されており、そこに書くと ax-toolkit が無い機種にも存在しないコマンドが
+# 載ってしまうため。リンクなら PATH の話だけで済む。
+ln -s jira-dash ~/.local/bin/jhd
+
 cp config.yml.example config.local.yml
 $EDITOR config.local.yml
 mkdir -p ~/.config/jira-dash
