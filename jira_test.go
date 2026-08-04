@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,3 +75,55 @@ func TestParseSearchJSONRejectsGarbage(t *testing.T) {
 		t.Fatal("want an error")
 	}
 }
+
+func TestCLISearchParsesStubOutput(t *testing.T) {
+	cli := CLI{Bin: "./testdata/fake-jira-ok.sh"}
+
+	issues, err := cli.Search(context.Background(), "assignee = currentUser()", 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("got %d issues, want 2", len(issues))
+	}
+}
+
+func TestCLIIssueReturnsMarkdown(t *testing.T) {
+	cli := CLI{Bin: "./testdata/fake-jira-ok.sh"}
+
+	md, err := cli.Issue(context.Background(), "ABC-1234")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(md, "ABC-1234") {
+		t.Errorf("markdown should mention the key, got %q", md)
+	}
+}
+
+// A failed call must surface one readable line, not a wall of stderr.
+func TestCLISearchReportsFirstStderrLine(t *testing.T) {
+	cli := CLI{Bin: "./testdata/fake-jira-fail.sh"}
+
+	_, err := cli.Search(context.Background(), "project = ABC", 20)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error should carry the first stderr line, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "second line") {
+		t.Errorf("error should stop at the first line, got: %v", err)
+	}
+}
+
+func TestCLISearchIsCancellable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := (CLI{Bin: "./testdata/fake-jira-ok.sh"}).Search(ctx, "project = ABC", 1); err == nil {
+		t.Fatal("a cancelled context must fail the call")
+	}
+}
+
+// CLI must satisfy Searcher, so the model can take a fake in tests.
+var _ Searcher = CLI{}

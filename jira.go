@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,4 +74,55 @@ func ParseSearchJSON(b []byte) ([]Issue, error) {
 		return nil, err
 	}
 	return env.Results, nil
+}
+
+// Searcher is the only door to the outside world. Keeping it one interface
+// means the whole UI is testable without a network, and that the CLI can be
+// swapped for direct REST calls later without touching the model.
+type Searcher interface {
+	Search(ctx context.Context, jql string, limit int) ([]Issue, error)
+	Issue(ctx context.Context, key string) (string, error)
+}
+
+// CLI runs the `jira` command. Every invocation pays ~360ms of tsx startup
+// before any network, which is why results are cached and rendered first.
+type CLI struct {
+	Bin string
+}
+
+func (c CLI) Search(ctx context.Context, jql string, limit int) ([]Issue, error) {
+	out, err := c.run(ctx, "search", "--jql", jql, "-l", strconv.Itoa(limit), "-f", "json")
+	if err != nil {
+		return nil, err
+	}
+	return ParseSearchJSON(out)
+}
+
+func (c CLI) Issue(ctx context.Context, key string) (string, error) {
+	out, err := c.run(ctx, "get", key, "-f", "markdown")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%s %s: %s", c.Bin, args[0], firstLine(stderr.String(), err))
+	}
+	return stdout.Bytes(), nil
+}
+
+// firstLine keeps the footer to one line; a stack trace in a status bar is
+// noise, and the useful part of a CLI failure is almost always line one.
+func firstLine(s string, fallback error) string {
+	for _, line := range strings.Split(s, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return fallback.Error()
 }
