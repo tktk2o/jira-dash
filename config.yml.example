@@ -1,0 +1,57 @@
+# jira-dash config — TEMPLATE / SEED
+#
+# The live config is the untracked, machine-local file `config.local.yml`
+# (a JQL names project keys, which must NOT be committed — this is a public
+# repo). setup.sh seeds config.local.yml from this file on first run, then
+# symlinks it to ~/.config/jira-dash/config.yml.
+#
+# Filters are raw JQL, so anything you can build in the Jira web UI can be
+# pasted here verbatim.
+
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser() AND statusCategory != Done
+    limit: 20
+  - title: Reported by me
+    jql: reporter = currentUser() AND statusCategory != Done
+    limit: 20
+  # Add company-specific sections in config.local.yml, not here:
+  #
+  #   - title: Current Sprint
+  #     jql: >-
+  #       project = ABC AND sprint in openSprints() AND statusCategory != Done
+  #     limit: 30
+
+defaults:
+  preview:
+    open: true
+    position: right
+    # 0 < width < 1 is a ratio of the screen width. The preview closes on its
+    # own when it would leave the table under 80 columns.
+    width: 0.5
+  limit: 20
+
+# Every {{...}} value is substituted already shell-quoted, because a Jira
+# title is free text and this command is run through `sh -c`. Do NOT add your
+# own quotes around a variable — `-n {{.IssueKey}}` is right, `-n "{{.IssueKey}}"`
+# would put literal quote marks in the window name.
+keybindings:
+  issues:
+    #: 課題をブラウザで開く
+    - key: o
+      command: open {{.IssueURL}}
+    #: 課題を Claude に渡して調査を始める（新しい tmux ウィンドウ）
+    - key: R
+      command: >-
+        tmux new-window -n {{.IssueKey}}
+        claude --permission-mode auto {{.IssueKey}}
+
+theme:
+  colors: # Dracula
+    text:
+      primary: "#f8f8f2"
+      secondary: "#6272a4"
+    background:
+      selected: "#44475a"
+    border:
+      primary: "#bd93f9"
