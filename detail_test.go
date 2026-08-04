@@ -67,7 +67,11 @@ func TestLoadIssueUsesTheCache(t *testing.T) {
 	if err := cache.WriteIssue("ABC-1", "# cached body\n"); err != nil {
 		t.Fatal(err)
 	}
-	m := NewModel(testConfig(), fakeSearcher{err: errTest}, cache, fixedNow())
+	// time.Now, not fixedNow: the TTL is measured against the file's mtime,
+	// which is the real clock. A fixed "now" hours away from it turns a
+	// just-written entry into a miss and the test starts depending on what
+	// time of day it runs.
+	m := NewModel(testConfig(), fakeSearcher{err: errTest}, cache, time.Now)
 
 	cmd := m.loadIssue("ABC-1")
 	if cmd == nil {
