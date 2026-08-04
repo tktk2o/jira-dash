@@ -244,3 +244,37 @@ func TestCreatePromptDoesNotAddALine(t *testing.T) {
 			before, after)
 	}
 }
+
+// "refreshing" as a static word gave no sign the dashboard was alive while the
+// CLI spent its 360ms of startup. The footer carries the animated frame.
+func TestFooterShowsTheSpinnerWhileTheSectionLoads(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	m.sections[0].loading = true
+
+	if got := renderFooter(m); !strings.Contains(got, m.spinner.View()) {
+		t.Errorf("footer %q should carry the spinner frame %q", got, m.spinner.View())
+	}
+
+	m.sections[0].loading = false
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = next.(Model)
+	if got := renderFooter(m); strings.Contains(got, "refreshing") {
+		t.Errorf("footer %q should stop saying refreshing once results land", got)
+	}
+}
+
+// On startup every section fetches at once, so which tabs are still waiting is
+// only visible from the tab strip.
+func TestTabStripMarksALoadingSection(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	m.sections[1].loading = true
+
+	if got := renderTabs(m); !strings.Contains(got, m.spinner.View()) {
+		t.Errorf("tabs %q should mark the loading section", got)
+	}
+
+	m.sections[1].loading = false
+	if got := renderTabs(m); strings.Contains(got, m.spinner.View()) {
+		t.Errorf("tabs %q should carry no spinner when nothing is loading", got)
+	}
+}

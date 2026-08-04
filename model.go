@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -107,6 +108,21 @@ type Model struct {
 	pendingG bool
 	showHelp bool
 	status   string
+
+	// spinner animates while any section is in flight. Its tick loop is only
+	// kept alive while something is loading: an idle dashboard that wakes up
+	// several times a second to redraw the same frame is pure waste.
+	spinner spinner.Model
+}
+
+// anyLoading answers whether the tick loop still has anything to animate.
+func (m Model) anyLoading() bool {
+	for _, s := range m.sections {
+		if s.loading {
+			return true
+		}
+	}
+	return false
 }
 
 func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
@@ -117,6 +133,7 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 		now:         now,
 		previewOpen: *cfg.Defaults.Preview.Open,
 		detail:      viewport.New(0, 0),
+		spinner:     newSpinner(cfg.Theme),
 	}
 
 	// Seed from cache so the first frame is instant; the fetch in Init then
@@ -133,11 +150,13 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0, len(m.sections))
+	// +1 for the spinner tick: every section starts out loading, so the
+	// animation has to be running from the first frame.
+	cmds := make([]tea.Cmd, 0, len(m.sections)+1)
 	for i, s := range m.sections {
 		cmds = append(cmds, fetchSection(m.searcher, i, s.cfg))
 	}
-	return tea.Batch(cmds...)
+	return tea.Batch(append(cmds, m.spinner.Tick)...)
 }
 
 func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
@@ -180,6 +199,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spinner.TickMsg:
+		// The loop ends by simply not scheduling the next tick. bubbles guards
+		// against two loops running at once by tagging its ticks, so a refresh
+		// restarting the loop cannot double the frame rate.
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if !m.anyLoading() {
+			return m, nil
+		}
+		return m, cmd
+
 	case createdMsg:
 		if msg.err != nil {
 			m.status = "create failed: " + msg.err.Error()
@@ -189,7 +219,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh the section it went into, so the new row appears without an r.
 		if msg.idx >= 0 && msg.idx < len(m.sections) {
 			m.sections[msg.idx].loading = true
-			return m, fetchSection(m.searcher, msg.idx, m.sections[msg.idx].cfg)
+			return m, tea.Batch(
+				fetchSection(m.searcher, msg.idx, m.sections[msg.idx].cfg),
+				m.spinner.Tick,
+			)
 		}
 		return m, nil
 
@@ -306,7 +339,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		s := &m.sections[m.active]
 		s.loading = true
-		return m, fetchSection(m.searcher, m.active, s.cfg)
+		// The tick is batched in because the loop stops itself whenever nothing
+		// is loading; without this the spinner would sit frozen on one frame.
+		return m, tea.Batch(fetchSection(m.searcher, m.active, s.cfg), m.spinner.Tick)
 	case "y":
 		return m, m.copySelected(func(i Issue) string { return i.Key })
 	case "Y":

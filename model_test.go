@@ -509,3 +509,54 @@ func TestCreateFailureIsReportedNotSwallowed(t *testing.T) {
 		t.Errorf("status = %q, want the error in it", m.status)
 	}
 }
+
+// The animation has to be driven by ticks, and the loop must stop when there is
+// nothing to animate: an idle dashboard that keeps waking up to redraw burns
+// CPU for no reason.
+func TestSpinnerTicksOnlyWhileSomethingLoads(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	m.sections[0].loading = true
+
+	_, cmd := m.Update(m.spinner.Tick())
+	if cmd == nil {
+		t.Error("a tick should schedule the next one while a section loads")
+	}
+
+	m.sections[0].loading = false
+	_, cmd = m.Update(m.spinner.Tick())
+	if cmd != nil {
+		t.Error("the tick loop should stop once nothing is loading")
+	}
+}
+
+// A refresh started after the loop went idle has to restart it, or the spinner
+// sits frozen on one frame.
+func TestRefreshRestartsTheSpinner(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("r should return commands")
+	}
+	// A tea.Batch is opaque, so the check is that the section is marked loading
+	// and that a tick then keeps the loop alive.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = next.(Model)
+	if !m.sections[0].loading {
+		t.Error("r should mark the section loading")
+	}
+	if _, cmd := m.Update(m.spinner.Tick()); cmd == nil {
+		t.Error("the tick loop should run again after a refresh")
+	}
+}
+
+// NewModel starts every section loading, since Init fetches them all. A test
+// about the idle state has to clear all of them, not just the one it touches.
+func settled(m Model) Model {
+	for i := range m.sections {
+		m.sections[i].loading = false
+	}
+	return m
+}

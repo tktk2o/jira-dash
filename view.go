@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -58,6 +59,17 @@ func newStyles(t Theme) styles {
 	}
 }
 
+// newSpinner uses the braille dots: every frame is one cell wide, so the label
+// beside it does not shift as it animates. It is painted in the secondary
+// colour, the same as the footer text it sits in.
+func newSpinner(t Theme) spinner.Model {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().
+		Foreground(lipgloss.Color(orDefault(t.Colors.Text.Secondary, "#6272a4")))
+	return s
+}
+
 func orDefault(v, fallback string) string {
 	if v == "" {
 		return fallback
@@ -70,6 +82,12 @@ func renderTabs(m Model) string {
 	parts := make([]string, 0, len(m.sections))
 	for i, s := range m.sections {
 		label := s.cfg.Title
+		// Every section fetches at once on startup, so which ones are still
+		// waiting is only visible here - the footer only speaks for the active
+		// tab.
+		if s.loading {
+			label = m.spinner.View() + " " + label
+		}
 		if i == m.active {
 			label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
 			parts = append(parts, st.activeTab.Render(label))
@@ -120,7 +138,9 @@ func renderFooter(m Model) string {
 		state = "never fetched"
 	}
 	if s.loading {
-		state += " · refreshing"
+		// The frame goes before the word: a static "refreshing" gave no sign the
+		// dashboard was alive through the CLI's 360ms of startup.
+		state += " · " + m.spinner.View() + " refreshing"
 	}
 	if m.status != "" {
 		state += " · " + m.status
