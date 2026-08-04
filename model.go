@@ -339,6 +339,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		s := &m.sections[m.active]
 		s.loading = true
+		// An explicit refresh blanks the list, the way gh-dash does: while the
+		// query is in flight there is then no moment where old rows look
+		// current. The cost is that a failed refresh has no stale rows to fall
+		// back on, which is why only r does this - the refetch after a create
+		// deliberately keeps its rows.
+		s.issues = nil
+		s.cursor = 0
+		s.err = nil
+		m.detailKey = ""
+		m.detail.SetContent("")
 		// The tick is batched in because the loop stops itself whenever nothing
 		// is loading; without this the spinner would sit frozen on one frame.
 		return m, tea.Batch(fetchSection(m.searcher, m.active, s.cfg), m.spinner.Tick)

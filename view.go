@@ -206,7 +206,13 @@ func (m Model) View() string {
 		rows = append(rows, st.row.Render("  "+line))
 	}
 	if len(rows) == 0 {
-		rows = append(rows, st.footer.Render("  (no issues)"))
+		// "(no issues)" and "loading" are different facts, and during a refresh
+		// the first is a lie: the rows were cleared, not found to be absent.
+		placeholder := "  (no issues)"
+		if s.loading {
+			placeholder = "  " + m.spinner.View() + " loading..."
+		}
+		rows = append(rows, st.footer.Render(placeholder))
 	}
 
 	table := strings.Join(rows, "\n")

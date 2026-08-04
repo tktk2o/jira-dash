@@ -278,3 +278,23 @@ func TestTabStripMarksALoadingSection(t *testing.T) {
 		t.Errorf("tabs %q should carry no spinner when nothing is loading", got)
 	}
 }
+
+// A cleared list must not read as "(no issues)" - that is a different fact, and
+// the wrong one during a refresh.
+func TestEmptySectionSaysLoadingWhileFetching(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	m.sections[0].loading = true
+
+	out := m.View()
+	if !strings.Contains(out, "loading") {
+		t.Errorf("view should say it is loading: %q", out)
+	}
+	if strings.Contains(out, "(no issues)") {
+		t.Errorf("a loading section must not claim to be empty: %q", out)
+	}
+
+	m.sections[0].loading = false
+	if out := m.View(); !strings.Contains(out, "(no issues)") {
+		t.Errorf("a settled empty section should say so: %q", out)
+	}
+}

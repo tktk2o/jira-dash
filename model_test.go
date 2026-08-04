@@ -560,3 +560,43 @@ func settled(m Model) Model {
 	}
 	return m
 }
+
+// gh-dash blanks the list on an explicit refresh and says it is loading, so
+// there is never a moment where old rows look current. Failure is the price:
+// there are no stale rows left to fall back on, which is why only r does this -
+// a background refetch after a create keeps the rows you are looking at.
+func TestExplicitRefreshClearsTheRows(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+	m = press(m, "j")
+
+	m = press(m, "r")
+
+	if len(m.sections[0].issues) != 0 {
+		t.Errorf("issues = %d, want the list cleared", len(m.sections[0].issues))
+	}
+	if !m.sections[0].loading {
+		t.Error("the section should be marked loading")
+	}
+	if m.sections[0].cursor != 0 {
+		t.Errorf("cursor = %d, want 0: the row it pointed at is gone", m.sections[0].cursor)
+	}
+	if m.detailKey != "" {
+		t.Errorf("detailKey = %q, want the preview cleared with the list", m.detailKey)
+	}
+}
+
+// The refetch a create triggers must not blank the section: you would be
+// staring at an empty list right after adding a row to it.
+func TestCreateRefetchKeepsTheRowsVisible(t *testing.T) {
+	m := createTestModel(t, nil)
+	before := len(m.sections[0].issues)
+
+	next, _ := m.Update(createdMsg{issue: Issue{Key: "NEW-1"}, idx: 0})
+	m = next.(Model)
+
+	if len(m.sections[0].issues) != before {
+		t.Errorf("issues = %d, want the %d existing rows kept", len(m.sections[0].issues), before)
+	}
+}
