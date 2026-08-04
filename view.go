@@ -32,18 +32,28 @@ const (
 	rowFixedWidth = colKey + colIcon + colStatus + colPoints +
 		colAssignee + colUpdated + colGaps
 
-	// "→ " / "  " drawn by View in front of every row.
-	cursorMarkerWidth = 2
+	// The gutter View draws in front of every row. It is not a cursor column -
+	// the selected row's fill covers it, the way gh-dash's does - it is the
+	// margin the chrome above the table lines up with.
+	leftMargin = 2
 
-	// Chrome around the preview viewport, which it does not draw itself.
-	borderChrome = 2 // the rounded border, both edges of one axis
-	// The horizontal padding inside that border, both edges. Vertically there is
-	// none, so only the width subtracts it.
-	borderPadding = 2
-	paneGap       = 1 // the space View puts between table and preview
+	// Chrome around the preview, which the viewport does not draw itself: the
+	// single rule dividing the panes, one column of air after it, and the gap
+	// before it. gh-dash divides its panes with one line rather than boxing the
+	// preview, which is also what lets the rule above span the terminal.
+	previewChrome = 3
 	// Lines renderHelp draws when the help is open. tableHeight subtracts it, so
 	// it has to match renderHelp exactly.
 	helpHeight = 3
+)
+
+// Two colours gh-dash uses that the theme config has no name for: the blue it
+// paints an identity in, and the grey it drops an age to. Read off a live
+// gh-dash's escape sequences - which report decimal, so 66;160;250 is #42a0fa,
+// not the #66a0fa it looks like.
+const (
+	identityBlue = "#42a0fa"
+	ageGrey      = "#8a8a8a"
 )
 
 type styles struct {
@@ -52,7 +62,38 @@ type styles struct {
 	selectedRow lipgloss.Style
 	row         lipgloss.Style
 	footer      lipgloss.Style
-	border      lipgloss.Style
+	header      lipgloss.Style
+	rule        lipgloss.Style
+	divider     lipgloss.Style
+}
+
+// rowStyles is the weighting inside one row. gh-dash gives a row four of them -
+// identity, metadata, age, title - and that hierarchy is most of why its list
+// reads as designed: the eye jumps from the key to the title and the columns
+// between recede. Drawn in one colour, as this was, a row has nothing to lead
+// the eye with.
+type rowStyles struct {
+	key, meta, age, summary lipgloss.Style
+}
+
+// newRowStyles carries the selection background into every segment rather than
+// letting View wrap the finished row in it. A style applied around a string that
+// already holds colour sequences loses the background at the first reset inside
+// it, so the selected row would come out striped.
+func newRowStyles(t Theme, selected bool) rowStyles {
+	primary := lipgloss.Color(orDefault(t.Colors.Text.Primary, "#f8f8f2"))
+	secondary := lipgloss.Color(orDefault(t.Colors.Text.Secondary, "#6272a4"))
+
+	base := lipgloss.NewStyle()
+	if selected {
+		base = base.Background(lipgloss.Color(orDefault(t.Colors.Background.Selected, "#44475a")))
+	}
+	return rowStyles{
+		key:     base.Foreground(lipgloss.Color(identityBlue)),
+		meta:    base.Foreground(secondary),
+		age:     base.Foreground(lipgloss.Color(ageGrey)),
+		summary: base.Foreground(primary).Bold(true),
+	}
 }
 
 func newStyles(t Theme) styles {
@@ -71,9 +112,19 @@ func newStyles(t Theme) styles {
 		selectedRow: lipgloss.NewStyle().Foreground(primary).Background(selected),
 		row:         lipgloss.NewStyle().Foreground(primary),
 		footer:      lipgloss.NewStyle().Foreground(secondary),
-		// Padded, because a border alone glued every line of the preview to the
-		// │ on both sides, which is most of what made the pane read as cramped.
-		border: lipgloss.NewStyle().Foreground(border).Border(lipgloss.RoundedBorder()).Padding(0, 1),
+		// Bold and bright, like gh-dash's: the column names are the key to the
+		// row beneath them, and dimmed they read as another row of data.
+		header: lipgloss.NewStyle().Foreground(primary).Bold(true),
+		// The rule takes the border colour rather than the footer's grey, which is
+		// what gh-dash draws it in.
+		rule: lipgloss.NewStyle().Foreground(border),
+		// One rule dividing the panes, with a column of air after it, instead of a
+		// box around the preview. A box made the preview a separate object on the
+		// screen and left the rule above it meeting nothing.
+		divider: lipgloss.NewStyle().Foreground(border).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(border).
+			PaddingLeft(1),
 	}
 }
 
@@ -136,10 +187,10 @@ func renderQueryLine(m Model, width int) string {
 
 	// Indented to the column header's left edge, so the chrome above the table
 	// shares one margin.
-	indent := strings.Repeat(" ", cursorMarkerWidth)
+	indent := strings.Repeat(" ", leftMargin)
 	st := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4")))
-	return st.Render(indent + Truncate("jql  "+query, maxInt(0, width-cursorMarkerWidth)))
+	return st.Render(indent + Truncate("jql  "+query, maxInt(0, width-leftMargin)))
 }
 
 // renderColumnHeader labels the columns renderRow lays out, using the same
@@ -165,22 +216,50 @@ func renderColumnHeader(width int) string {
 // Padding goes through runewidth, not fmt: `%-*s` pads to a rune count, so a
 // Japanese summary would end up the wrong number of cells wide and the columns
 // would stop lining up between rows.
-func renderRow(i Issue, width int, now time.Time) string {
-	line := strings.Join([]string{
-		runewidth.FillRight(Truncate(i.Key, colKey), colKey),
-		runewidth.FillRight(TypeIcon(i.Type), colIcon),
-		runewidth.FillRight(Truncate(i.Status, colStatus), colStatus),
-		runewidth.FillLeft(StoryPointText(i.StoryPoints), colPoints),
-		runewidth.FillRight(Truncate(i.AssigneeName(), colAssignee), colAssignee),
-		runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated),
-		PriorityChip(i.Priority) + Truncate(i.Summary, maxInt(0, width-rowFixedWidth-runewidth.StringWidth(PriorityChip(i.Priority)))),
-	}, " ")
+func renderRow(i Issue, width int, now time.Time, rs rowStyles) string {
+	chip := PriorityChip(i.Priority)
+	summary := chip + Truncate(i.Summary, maxInt(0, width-rowFixedWidth-runewidth.StringWidth(chip)))
+
+	// Padded and truncated before styling, then styled per segment: measuring a
+	// string that already holds colour sequences counts them as cells.
+	cells := []struct {
+		text  string
+		style lipgloss.Style
+	}{
+		{runewidth.FillRight(Truncate(i.Key, colKey), colKey), rs.key},
+		{runewidth.FillRight(TypeIcon(i.Type), colIcon), rs.meta},
+		{runewidth.FillRight(Truncate(i.Status, colStatus), colStatus), rs.meta},
+		{runewidth.FillLeft(StoryPointText(i.StoryPoints), colPoints), rs.meta},
+		{runewidth.FillRight(Truncate(i.AssigneeName(), colAssignee), colAssignee), rs.meta},
+		{runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated), rs.age},
+		{summary, rs.summary},
+	}
 
 	// The fixed columns alone are 46 cells, so a very narrow terminal cannot fit
-	// them. Cutting the line keeps the invariant that a row never draws wider
-	// than the width it was handed - without it the table spills past the pane
-	// and the preview beside it gets pushed off screen.
-	return Truncate(line, width)
+	// them. Cutting keeps the invariant that a row never draws wider than the
+	// width it was handed - without it the table spills past the pane and the
+	// preview beside it gets pushed off screen. It happens per cell, so the
+	// budget is spent left to right and the key survives.
+	out, spent := make([]string, 0, len(cells)), 0
+	for _, c := range cells {
+		if spent >= width {
+			break
+		}
+		if spent > 0 {
+			// Styled, not a bare space: on the selected row an unstyled gap would
+			// punch a hole in the fill between every pair of columns.
+			out, spent = append(out, c.style.Render(" ")), spent+1
+		}
+		text := Truncate(c.text, width-spent)
+		spent += runewidth.StringWidth(text)
+		out = append(out, c.style.Render(text))
+	}
+	// Padded out to the full width so the selected row's fill reaches the edge of
+	// the table rather than stopping at the end of a short summary.
+	if spent < width {
+		out = append(out, rs.summary.Render(strings.Repeat(" ", width-spent)))
+	}
+	return strings.Join(out, "")
 }
 
 // PriorityChip prefixes the summary with a priority only when the priority says
@@ -247,8 +326,8 @@ func renderHelp(width int) string {
 		"create keys come from the config (esc cancels)",
 	}
 	for i, line := range lines {
-		lines[i] = strings.Repeat(" ", cursorMarkerWidth) +
-			Truncate(line, maxInt(0, width-cursorMarkerWidth))
+		lines[i] = strings.Repeat(" ", leftMargin) +
+			Truncate(line, maxInt(0, width-leftMargin))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -279,20 +358,21 @@ func (m Model) View() string {
 
 	rows := make([]string, 0, len(s.visible()))
 	now := m.now()
-	// The cursor marker is drawn outside renderRow, so it has to come out of
-	// the row's budget or every line would be two cells wider than the pane it
-	// was measured for.
-	rowWidth := tableWidth - cursorMarkerWidth
+	// The margin is drawn outside renderRow, so it has to come out of the row's
+	// budget or every line would be two cells wider than the pane it was measured
+	// for.
+	rowWidth := tableWidth - leftMargin
+	unselected, selected := newRowStyles(m.cfg.Theme, false), newRowStyles(m.cfg.Theme, true)
 	for idx, issue := range s.visible() {
-		// One line per issue, so the selected row's fill is the only separator
-		// needed: the rules that used to sit between rows were there to keep a
-		// two-line row from reading as two issues.
-		style := st.row
-		marker := "  "
+		// No arrow: the fill marks the selected row on its own, which is how
+		// gh-dash does it, and it spans the full width of the table. The margin is
+		// rendered in the row's own style so the fill covers it too.
+		rs, gutter := unselected, st.row
 		if idx == s.cursor {
-			style, marker = st.selectedRow, "→ "
+			rs, gutter = selected, st.selectedRow
 		}
-		rows = append(rows, style.Render(marker+renderRow(issue, rowWidth, now)))
+		rows = append(rows, gutter.Render(strings.Repeat(" ", leftMargin))+
+			renderRow(issue, rowWidth, now, rs))
 	}
 	if len(rows) == 0 {
 		// "(no issues)" and "loading" are different facts, and during a refresh
@@ -323,23 +403,22 @@ func (m Model) View() string {
 	table := strings.Join(rows, "\n")
 	body := table
 	if showPreview {
-		// The border is what separates the two panes; without it the markdown
-		// ran straight into the table rows and read as part of them.
-		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.border.Render(m.detail.View()))
+		// One rule between the panes, the way gh-dash divides them. Boxing the
+		// preview instead made it a separate object floating beside the table, and
+		// left the rule above meeting nothing on its far side.
+		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.divider.Render(m.detail.View()))
 	}
 
 	// The chrome above the table, in the order gh-dash stacks it: tabs, a rule
-	// across the whole width, the query the tab is showing, then the column
-	// names. verticalChrome has to match how many lines this adds, or the
-	// preview viewport is sized for a taller pane than it gets.
-	// The rule spans the table, not the terminal. At full width it ran on across
-	// the preview - which is its own bordered box, so the rule met nothing on the
-	// far side and the screen showed four horizontal lines at four widths.
+	// across the whole terminal, the query the tab is showing, then the column
+	// names. The rule spans the terminal rather than the table because the panes
+	// are divided by a rule of their own now, which it meets - so it caps both
+	// panes instead of stopping in mid-air over the preview.
 	sections := []string{
 		renderTabs(m),
-		st.footer.Render(strings.Repeat("━", maxInt(0, tableWidth))),
+		st.rule.Render(strings.Repeat("━", maxInt(0, m.width))),
 		renderQueryLine(m, tableWidth),
-		st.footer.Render(strings.Repeat(" ", cursorMarkerWidth) + renderColumnHeader(rowWidth)),
+		st.header.Render(strings.Repeat(" ", leftMargin) + renderColumnHeader(rowWidth)),
 		body,
 	}
 	if promptLine != "" {

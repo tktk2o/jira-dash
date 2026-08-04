@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -43,19 +45,29 @@ func TestActiveTabIsFilledNotJustBold(t *testing.T) {
 	}
 }
 
-// The preview used to run straight into the table with nothing between them.
-// The border style was built and never applied, so the documented border colour
-// had no effect at all.
-func TestPreviewIsDrawnInsideABorder(t *testing.T) {
+// The panes are divided by a single rule, the way gh-dash divides its own. As a
+// rounded box the preview read as a separate object floating beside the table,
+// and it left the rule above the table meeting nothing on its far side.
+func TestPreviewIsDividedByARuleNotABox(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	m = next.(Model)
 	next, _ = m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: time.Now()})
 	m = next.(Model)
 
-	out := m.View()
-	if !strings.Contains(out, "╭") || !strings.Contains(out, "╰") {
-		t.Errorf("the preview pane should be framed by a rounded border: %q", out)
+	out := plain(m.View())
+	if strings.ContainsAny(out, "╭╮╰╯") {
+		t.Errorf("the preview should not be boxed: %q", out)
+	}
+	// The divider has to reach every line of the pane, not just the first.
+	divided := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "│") {
+			divided++
+		}
+	}
+	if divided < 5 {
+		t.Errorf("only %d lines carry the divider: %q", divided, out)
 	}
 }
 
@@ -64,7 +76,7 @@ func TestRenderRowHoldsKeyStatusAndAge(t *testing.T) {
 	issue := Issue{Key: "ABC-1234", Summary: "トークン更新で 500 が出る", Status: "In Progress", Type: "Bug"}
 	issue.Updated.Time = now.Add(-2 * time.Hour)
 
-	row := renderRow(issue, 100, now)
+	row := plainRow(issue, 100, now)
 
 	for _, want := range []string{"ABC-1234", "In Progress", "2h", TypeIcon("Bug")} {
 		if !strings.Contains(row, want) {
@@ -79,7 +91,7 @@ func TestRenderRowKeepsKeyWhenNarrow(t *testing.T) {
 	now := time.Now()
 	issue := Issue{Key: "ABC-1234", Summary: strings.Repeat("長い要約", 40), Status: "Open", Type: "Task"}
 
-	row := renderRow(issue, 60, now)
+	row := plainRow(issue, 60, now)
 
 	if !strings.Contains(row, "ABC-1234") {
 		t.Errorf("the key must survive truncation: %q", row)
@@ -99,8 +111,8 @@ func TestRenderRowColumnsAlignAcrossScripts(t *testing.T) {
 
 	// The summary is empty on both, so whatever the row measures is exactly where
 	// the fixed columns end.
-	a := runewidth.StringWidth(renderRow(ascii, 100, now))
-	b := runewidth.StringWidth(renderRow(japanese, 100, now))
+	a := runewidth.StringWidth(plainRow(ascii, 100, now))
+	b := runewidth.StringWidth(plainRow(japanese, 100, now))
 	if a != b {
 		t.Errorf("summary column starts at %d cells for ascii but %d for japanese", a, b)
 	}
@@ -117,7 +129,7 @@ func TestRenderRowNeverExceedsItsWidth(t *testing.T) {
 	}
 
 	for _, width := range []int{120, 100, 60, 46, 45, 40, 20, 5} {
-		if got := runewidth.StringWidth(renderRow(issue, width, now)); got > width {
+		if got := runewidth.StringWidth(plainRow(issue, width, now)); got > width {
 			t.Errorf("renderRow at width %d rendered %d cells", width, got)
 		}
 	}
@@ -384,7 +396,7 @@ func TestRenderRowIsOneLine(t *testing.T) {
 	issue.Assignee = ptr("琢人 加藤")
 	issue.Updated.Time = now.Add(-2 * time.Hour)
 
-	row := renderRow(issue, 100, now)
+	row := plainRow(issue, 100, now)
 
 	if strings.Contains(row, "\n") {
 		t.Fatalf("a row should be one line: %q", row)
@@ -399,7 +411,7 @@ func TestRenderRowIsOneLine(t *testing.T) {
 // Story points are often unset, and "0" reads as a real estimate.
 func TestRenderRowMarksAbsentStoryPointsWithADash(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	row := renderRow(Issue{Key: "ABC-1"}, 100, now)
+	row := plainRow(Issue{Key: "ABC-1"}, 100, now)
 
 	if strings.Contains(row, "0") {
 		t.Errorf("an unset story point count must not render as 0: %q", row)
@@ -414,33 +426,37 @@ func TestRenderRowMarksAbsentStoryPointsWithADash(t *testing.T) {
 func TestPriorityShowsOnlyWhenItIsNotTheDefault(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 
-	medium := renderRow(Issue{Key: "ABC-1", Summary: "x", Priority: "Medium"}, 100, now)
+	medium := plainRow(Issue{Key: "ABC-1", Summary: "x", Priority: "Medium"}, 100, now)
 	if strings.Contains(medium, "Medium") {
 		t.Errorf("the default priority should not be drawn: %q", medium)
 	}
 
-	high := renderRow(Issue{Key: "ABC-2", Summary: "x", Priority: "Highest"}, 100, now)
+	high := plainRow(Issue{Key: "ABC-2", Summary: "x", Priority: "Highest"}, 100, now)
 	if !strings.Contains(high, "Highest") {
 		t.Errorf("a priority worth reading should be drawn: %q", high)
 	}
 }
 
-// The rule under the tab strip used to span the terminal while everything below
-// it spanned the table, so it crossed over the preview - which is its own
-// bordered box - and met nothing on the far side.
-func TestChromeAboveTheTableSharesTheTableWidth(t *testing.T) {
+// The rule caps both panes, so it spans the terminal and meets the rule that
+// divides them - the same as gh-dash. It only worked at the table's width while
+// the preview was a box, when there was nothing on the far side for it to meet.
+func TestTheRuleSpansTheTerminal(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("A-1"), at: fixedNow()()})
 	m = settled(next.(Model))
 
-	tableWidth := m.width - int(float64(m.width)*m.cfg.Defaults.Preview.Width)
-	for _, line := range strings.Split(m.View(), "\n") {
+	found := false
+	for _, line := range strings.Split(plain(m.View()), "\n") {
 		if !strings.Contains(line, "━") {
 			continue
 		}
-		if got := runewidth.StringWidth(line); got != tableWidth {
-			t.Errorf("the rule is %d cells, want the table's %d: %q", got, tableWidth, line)
+		found = true
+		if got := runewidth.StringWidth(line); got != m.width {
+			t.Errorf("the rule is %d cells, want the terminal's %d", got, m.width)
 		}
+	}
+	if !found {
+		t.Error("no rule was drawn under the tab strip")
 	}
 }
 
@@ -530,3 +546,58 @@ func TestViewNeverDrawsMoreLinesThanTheTerminalHas(t *testing.T) {
 func ptr(s string) *string { return &s }
 
 func fptr(f float64) *float64 { return &f }
+
+// gh-dash gives a row four weights - identity, metadata, age, title - and that
+// hierarchy is most of why its list reads as designed. Drawn in one colour a row
+// has nothing to lead the eye with.
+// Asserted on the styles rather than on rendered output: lipgloss strips colour
+// when it is not writing to a terminal, so under `go test` every row renders
+// bare and an assertion on the escape sequences would pass no matter what.
+func TestRowGivesItsColumnsDifferentWeights(t *testing.T) {
+	rs := newRowStyles(Theme{}, false)
+
+	weights := map[string]bool{}
+	for _, s := range []lipgloss.Style{rs.key, rs.meta, rs.age, rs.summary} {
+		weights[fmt.Sprintf("%v-%v", s.GetForeground(), s.GetBold())] = true
+	}
+	if len(weights) < 4 {
+		t.Errorf("a row has %d distinct weights, want 4: %v", len(weights), weights)
+	}
+	if !rs.summary.GetBold() {
+		t.Error("the summary is the field you read; it should be the bold one")
+	}
+	if rs.key.GetForeground() == rs.meta.GetForeground() {
+		t.Error("the key should stand out from the metadata beside it")
+	}
+}
+
+// The fill is the only thing marking the selected row now that the arrow is
+// gone, so it has to be unbroken. Styling the columns individually means every
+// gap between them is its own segment, and one left without the background
+// punches a hole through the fill.
+func TestSelectedRowCarriesTheFillInEverySegment(t *testing.T) {
+	rs := newRowStyles(Theme{}, true)
+
+	for name, s := range map[string]lipgloss.Style{
+		"key": rs.key, "meta": rs.meta, "age": rs.age, "summary": rs.summary,
+	} {
+		if s.GetBackground() == nil {
+			t.Errorf("the %s segment carries no fill", name)
+		}
+	}
+
+	// And the row has to reach the full width, or the fill stops at the end of a
+	// short summary instead of the edge of the table.
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	short := Issue{Key: "ABC-1", Type: "Bug", Status: "Open", Summary: "short"}
+	if got := runewidth.StringWidth(plainRow(short, 100, now)); got != 100 {
+		t.Errorf("a row with a short summary is %d cells, want the full 100", got)
+	}
+}
+
+// plainRow renders a row with the styles stripped. Widths have to be measured on
+// the text alone - a styled string counts its escape sequences as cells - and
+// every assertion here is about layout, not colour.
+func plainRow(i Issue, width int, now time.Time) string {
+	return plain(renderRow(i, width, now, newRowStyles(Theme{}, false)))
+}

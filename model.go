@@ -188,19 +188,20 @@ func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
 
 // resizeDetail sizes the preview viewport, which does not draw its own chrome
 // and starts 0x0 - without this the pane renders nothing at all. What is
-// subtracted is what View wraps it in: the border (2 cells each way) and the
-// padding inside it, and the single-column gap between the panes.
+// subtracted horizontally is what View wraps it in: the rule dividing the panes,
+// the column of air after it, and the gap before it.
 //
 // Its height comes from tableHeight rather than its own arithmetic, because the
 // two sit side by side and the taller one decides how far down the screen the
 // footer lands. Computed separately they drifted, and opening the help pushed
 // two lines off the bottom of the terminal. tableHeight is asked for its
 // smallest answer - the one with the prompt line open - since the prompt appears
-// without the viewport being resized.
+// without the viewport being resized. Nothing is taken off vertically: the
+// divider is a left border only, so it adds no lines.
 func (m *Model) resizeDetail() {
 	previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
-	m.detail.Width = maxInt(0, previewWidth-borderChrome-borderPadding-paneGap)
-	m.detail.Height = maxInt(0, m.tableHeight(true)-borderChrome)
+	m.detail.Width = maxInt(0, previewWidth-previewChrome)
+	m.detail.Height = maxInt(0, m.tableHeight(true))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
