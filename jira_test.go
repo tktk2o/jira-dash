@@ -128,8 +128,8 @@ func TestCLISearchIsCancellable(t *testing.T) {
 // CLI must satisfy Searcher, so the model can take a fake in tests.
 var _ Searcher = CLI{}
 
-// A rotating sprint name ("Deigo 0803-0807") cannot be matched in JQL: the
-// sprint field takes no LIKE operator, and `sprint ~ "Deigo"` was measured
+// A rotating sprint name ("Team 0803-0807") cannot be matched in JQL: the
+// sprint field takes no LIKE operator, and `sprint ~ "Team"` was measured
 // returning 2 of the sprint's 15 issues. The prefix match therefore happens
 // here, which needs the sprint names and states out of the search JSON.
 func TestParseSearchJSONKeepsSprintNamesAndStates(t *testing.T) {
