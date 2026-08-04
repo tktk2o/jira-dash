@@ -48,15 +48,21 @@ func Truncate(s string, w int) string {
 // Mixing widths here would shift every column to its right depending on the
 // issue type, so candidates that compute as one cell are avoided: ⚙️ carries a
 // variation selector, 🗂 is one cell, and • is one cell.
+// A Jira site returns the type name in its own language, so both spellings of
+// each default type are listed. A workspace-custom type ("Architecture Spike"
+// and the like) matches neither and keeps the fallback - its name would be
+// workspace-specific and this repo is public.
 func TypeIcon(issueType string) string {
 	switch strings.ToLower(issueType) {
-	case "bug":
+	case "bug", "バグ":
 		return "🐞"
-	case "story":
+	case "story", "ストーリー":
 		return "📘"
-	case "task", "sub-task", "subtask":
+	// Both Japanese names are listed literally: サブタスク ends with タスク, so
+	// matching on a suffix would collapse them by accident.
+	case "task", "sub-task", "subtask", "タスク", "サブタスク":
 		return "🔧"
-	case "epic":
+	case "epic", "エピック":
 		return "🧩"
 	default:
 		return "📄"

@@ -62,6 +62,20 @@ func TestTypeIcon(t *testing.T) {
 		"Epic":     "🧩",
 		"Whatever": "📄",
 		"":         "📄",
+
+		// A real Jira returns the type in the site's language, so the English
+		// names above never match on a Japanese site. Measured against a live
+		// instance: 100 issues came back as ストーリー / タスク / サブタスク /
+		// バグ / エピック plus workspace-custom names.
+		"ストーリー": "📘",
+		"タスク":   "🔧",
+		"サブタスク": "🔧",
+		"バグ":    "🐞",
+		"エピック":  "🧩",
+
+		// A custom type is not in either language's defaults and stays on the
+		// fallback; its name would be workspace-specific and this repo is public.
+		"運用系タスク": "📄",
 	} {
 		if got := TypeIcon(input); got != want {
 			t.Errorf("TypeIcon(%q) = %q, want %q", input, got, want)
@@ -75,7 +89,8 @@ func TestTypeIcon(t *testing.T) {
 // while most terminals draw them as 2, and • is genuinely 1 — all three would
 // misalign the table.
 func TestTypeIconsAreAllTwoCellsWide(t *testing.T) {
-	for _, input := range []string{"Bug", "Story", "Task", "Sub-task", "Epic", "Whatever", ""} {
+	for _, input := range []string{"Bug", "Story", "Task", "Sub-task", "Epic", "Whatever", "",
+		"ストーリー", "タスク", "サブタスク", "バグ", "エピック", "運用系タスク"} {
 		if got := runewidth.StringWidth(TypeIcon(input)); got != 2 {
 			t.Errorf("TypeIcon(%q) is %d cells wide, want 2", input, got)
 		}

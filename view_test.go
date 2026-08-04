@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -22,6 +23,38 @@ func TestRenderTabsMarksTheActiveSectionWithItsCount(t *testing.T) {
 	}
 	if !strings.Contains(out, "2") {
 		t.Errorf("the active tab should carry its row count: %q", out)
+	}
+}
+
+// Bold plus a row count was too weak a cue to notice: switching sections read
+// as "tab does nothing" on a live dashboard, because both sections opened on
+// the same first issue. The active tab carries the selection background, the
+// same colour the selected row uses.
+func TestActiveTabIsFilledNotJustBold(t *testing.T) {
+	st := newStyles(Theme{})
+
+	if got := st.activeTab.GetBackground(); got != st.selectedRow.GetBackground() {
+		t.Errorf("active tab background = %v, want the selected-row background %v",
+			got, st.selectedRow.GetBackground())
+	}
+	if st.inactiveTab.GetBackground() == st.activeTab.GetBackground() {
+		t.Error("inactive tab must not share the active tab's background")
+	}
+}
+
+// The preview used to run straight into the table with nothing between them.
+// The border style was built and never applied, so the documented border colour
+// had no effect at all.
+func TestPreviewIsDrawnInsideABorder(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	m = next.(Model)
+	next, _ = m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: time.Now()})
+	m = next.(Model)
+
+	out := m.View()
+	if !strings.Contains(out, "╭") || !strings.Contains(out, "╰") {
+		t.Errorf("the preview pane should be framed by a rounded border: %q", out)
 	}
 }
 

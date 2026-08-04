@@ -22,6 +22,11 @@ const (
 
 	// "→ " / "  " drawn by View in front of every row.
 	cursorMarkerWidth = 2
+
+	// Chrome around the preview viewport, which it does not draw itself.
+	borderChrome   = 2 // the rounded border, both edges of one axis
+	paneGap        = 1 // the space View puts between table and preview
+	verticalChrome = 3 // tab strip, footer, filter line
 )
 
 type styles struct {
@@ -40,7 +45,11 @@ func newStyles(t Theme) styles {
 	border := lipgloss.Color(orDefault(t.Colors.Border.Primary, "#bd93f9"))
 
 	return styles{
-		activeTab:   lipgloss.NewStyle().Foreground(primary).Bold(true).Padding(0, 1),
+		// Filled, not merely bold: on a live dashboard two sections often open
+		// on the same first issue, and a bold title alone read as "tab does
+		// nothing". The fill reuses the selected-row colour so the screen has
+		// one idea of "this is where you are".
+		activeTab:   lipgloss.NewStyle().Foreground(primary).Background(selected).Bold(true).Padding(0, 1),
 		inactiveTab: lipgloss.NewStyle().Foreground(secondary).Padding(0, 1),
 		selectedRow: lipgloss.NewStyle().Foreground(primary).Background(selected),
 		row:         lipgloss.NewStyle().Foreground(primary),
@@ -167,7 +176,9 @@ func (m Model) View() string {
 	table := strings.Join(rows, "\n")
 	body := table
 	if showPreview {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, table, "  ", m.detail.View())
+		// The border is what separates the two panes; without it the markdown
+		// ran straight into the table rows and read as part of them.
+		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.border.Render(m.detail.View()))
 	}
 
 	filterLine := ""
