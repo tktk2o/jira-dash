@@ -24,9 +24,20 @@ var jiraTimeLayouts = []string{
 	time.RFC3339,
 }
 
+// UnmarshalJSON goes through the string decoder rather than trimming the quotes
+// off itself: a JSON null is a valid absent time, and only the decoder can tell
+// it from the four-character string "null".
 func (t *JiraTime) UnmarshalJSON(b []byte) error {
-	s := strings.Trim(string(b), `"`)
-	if s == "" || s == "null" {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		// A null unmarshals into no string at all, which is the absent case; any
+		// other shape is a field this type cannot hold.
+		if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
+			return nil
+		}
+		return err
+	}
+	if s == "" {
 		return nil
 	}
 	for _, layout := range jiraTimeLayouts {
@@ -282,18 +293,30 @@ func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%s %s: %s", c.Bin, args[0], firstLine(stderr.String(), err))
+		// The deadline is checked first because exec cannot report it: a killed
+		// process comes back as "signal: killed", which reads like a crash. Wrapped
+		// rather than formatted so a caller can still tell the two apart with
+		// errors.Is.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%s %s: %w", c.Bin, args[0], ctxErr)
+		}
+		if msg := firstLine(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("%s %s: %s: %w", c.Bin, args[0], msg, err)
+		}
+		return nil, fmt.Errorf("%s %s: %w", c.Bin, args[0], err)
 	}
 	return stdout.Bytes(), nil
 }
 
 // firstLine keeps the footer to one line; a stack trace in a status bar is
-// noise, and the useful part of a CLI failure is almost always line one.
-func firstLine(s string, fallback error) string {
-	for _, line := range strings.Split(s, "\n") {
+// noise, and the useful part of a CLI failure is almost always line one. An
+// empty result means stderr said nothing, and the caller falls back to the
+// exec error.
+func firstLine(s string) string {
+	for line := range strings.SplitSeq(s, "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			return trimmed
 		}
 	}
-	return fallback.Error()
+	return ""
 }

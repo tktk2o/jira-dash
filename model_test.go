@@ -733,3 +733,25 @@ func TestAKeyWithoutPromptStillRunsImmediately(t *testing.T) {
 		t.Error("it should run at once")
 	}
 }
+
+// Space arrives as its own key type rather than as a rune, so without a case for
+// it the filter could only ever hold one word - and a summary is where you want
+// two.
+func TestFilterAcceptsSpaces(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	m = press(m, "/")
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("two")},
+		{Type: tea.KeySpace, Runes: []rune(" ")},
+		{Type: tea.KeyRunes, Runes: []rune("words")},
+	} {
+		next, _ = m.Update(k)
+		m = next.(Model)
+	}
+	if m.filterDraft != "two words" {
+		t.Errorf("filterDraft = %q, want %q", m.filterDraft, "two words")
+	}
+}

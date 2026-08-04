@@ -27,8 +27,12 @@ const cacheVersion = "v2"
 // safeKey keeps a key from escaping the cache directory. Keys are issue keys and
 // hashes today, but an issue key comes from Jira, and a path separator in one
 // would otherwise write wherever it pointed.
+// The replacer is built once: it compiles a matcher, and safeKey is on the path
+// of every cache read and write.
+var keyReplacer = strings.NewReplacer("/", "_", `\`, "_", "..", "_")
+
 func safeKey(key string) string {
-	return strings.NewReplacer("/", "_", `\`, "_", "..", "_").Replace(key)
+	return keyReplacer.Replace(key)
 }
 
 type Cache struct {

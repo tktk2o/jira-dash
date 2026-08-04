@@ -165,7 +165,7 @@ func renderPreviewHeader(i Issue, now time.Time, width int, ps previewStyles) st
 		age = ""
 	}
 	line := ps.meta.Render(Truncate(strings.Join(meta, " ⋅ "),
-		maxInt(0, width-runewidth.StringWidth(age))))
+		max(0, width-runewidth.StringWidth(age))))
 	if age != "" {
 		line += ps.age.Render(age)
 	}
@@ -199,7 +199,7 @@ func renderComments(comments []Comment, now time.Time, width int, ps previewStyl
 		if runewidth.StringWidth(age) > width {
 			age = ""
 		}
-		author := Truncate(orDefault(c.Author, "-"), maxInt(0, width-runewidth.StringWidth(age)))
+		author := Truncate(orDefault(c.Author, "-"), max(0, width-runewidth.StringWidth(age)))
 		out = append(out,
 			ps.author.Render(author)+ps.age.Render(age),
 			// The body is left to the markdown renderer downstream; wrapping it

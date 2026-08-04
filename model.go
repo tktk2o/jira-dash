@@ -217,8 +217,8 @@ func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
 // prompt state so that class of miss fails there rather than on screen.
 func (m *Model) resizeDetail() {
 	previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
-	m.detail.Width = maxInt(0, previewWidth-previewChrome)
-	m.detail.Height = maxInt(0, m.tableHeight())
+	m.detail.Width = max(0, previewWidth-previewChrome)
+	m.detail.Height = max(0, m.tableHeight())
 }
 
 // tableWidth is the pane the table gets: the whole terminal, less the preview
@@ -360,7 +360,7 @@ func (m Model) applyFetched(msg fetchedMsg) Model {
 	s.issues = msg.issues
 	s.fetchedAt = msg.at
 	if s.cursor >= len(s.visible()) {
-		s.cursor = maxInt(0, len(s.visible())-1)
+		s.cursor = max(0, len(s.visible())-1)
 	}
 	m.sections[msg.idx] = s
 
@@ -413,7 +413,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingG = true
 		return m, nil
 	case "G":
-		m.sections[m.active].cursor = maxInt(0, len(m.sections[m.active].visible())-1)
+		m.sections[m.active].cursor = max(0, len(m.sections[m.active].visible())-1)
 		return m, m.selectionChanged()
 	case "p":
 		m.previewOpen = !m.previewOpen
@@ -422,10 +422,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// separate places, and comments sit below a long description, so without
 	// these they were unreachable. The row cursor is deliberately untouched.
 	case "ctrl+d":
-		m.detail.HalfViewDown()
+		m.detail.HalfPageDown()
 		return m, nil
 	case "ctrl+u":
-		m.detail.HalfViewUp()
+		m.detail.HalfPageUp()
 		return m, nil
 	case "/":
 		m.filtering = true
@@ -599,7 +599,7 @@ func (m *Model) openPrompt(height int) {
 	m.prompt.Focus()
 	// The box is as wide as the table, less its border, its padding and the
 	// column the line numbers take.
-	m.prompt.SetWidth(maxInt(1, m.tableWidth()-6))
+	m.prompt.SetWidth(max(1, m.tableWidth()-6))
 }
 
 // createdMsg reports the outcome. idx is the section the create was launched
@@ -637,8 +637,14 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filterDraft = string(r[:len(r)-1])
 		}
 		return m, nil
+	// Space arrives as its own key type, not as a rune, so without it here a
+	// filter could never hold more than one word - and a summary filter is
+	// exactly where you want two.
 	case tea.KeyRunes:
 		m.filterDraft += string(msg.Runes)
+		return m, nil
+	case tea.KeySpace:
+		m.filterDraft += " "
 		return m, nil
 	}
 	return m, nil
@@ -651,15 +657,8 @@ func (m Model) moveCursor(delta int) (tea.Model, tea.Cmd) {
 		next = 0
 	}
 	if limit := len(s.visible()) - 1; next > limit {
-		next = maxInt(0, limit)
+		next = max(0, limit)
 	}
 	s.cursor = next
 	return m, m.selectionChanged()
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

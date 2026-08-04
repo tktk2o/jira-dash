@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -93,15 +97,23 @@ type Colors struct {
 func LoadConfig(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf(
 				"config not found: %s\ncopy config.yml.example from this repository to that path and edit it", path)
 		}
 		return nil, err
 	}
 
+	// KnownFields rather than yaml.Unmarshal: a misspelled key would otherwise
+	// unmarshal into nothing at all, and the feature it was meant to configure
+	// would look broken instead of the config looking wrong. A hand-edited YAML
+	// file is exactly where that typo happens.
 	var c Config
-	if err := yaml.Unmarshal(raw, &c); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	// An empty file decodes as EOF rather than as an empty document; it is the
+	// "jiraSections is empty" case below, which names what to do about it.
+	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(c.Sections) == 0 {
@@ -134,18 +146,42 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	// Every configured key goes through the same two checks, and through one
+	// another: handleKey tries the dashboard's own switch, then the create keys,
+	// then the issue keybindings, so a key claimed twice silently loses in that
+	// order. Refusing at load is the only place the loser is still visible.
+	claimed := map[string]string{}
 	for _, k := range c.Create {
 		if k.Key == "" || k.Type == "" {
 			return nil, fmt.Errorf("%s: every create entry needs both a key and a type", path)
 		}
-		// A create key that shadowed j, /, q or r would break navigation in a way
-		// that is hard to trace back to the config, so it is refused at load
-		// rather than silently losing to the switch in handleKey.
-		if reservedKeys[k.Key] {
-			return nil, fmt.Errorf("%s: create key %q is already a dashboard key", path, k.Key)
+		if err := claimKey(path, claimed, k.Key, "create key"); err != nil {
+			return nil, err
+		}
+	}
+	for _, k := range c.Keybindings.Issues {
+		if k.Key == "" || k.Command == "" {
+			return nil, fmt.Errorf("%s: every keybindings.issues entry needs both a key and a command", path)
+		}
+		if err := claimKey(path, claimed, k.Key, "keybinding"); err != nil {
+			return nil, err
 		}
 	}
 	return &c, nil
+}
+
+// claimKey refuses a key the dashboard already owns, or that another config
+// entry has already taken. A create key that shadowed j, /, q or r would break
+// navigation in a way that is hard to trace back to the config.
+func claimKey(path string, claimed map[string]string, key, what string) error {
+	if reservedKeys[key] {
+		return fmt.Errorf("%s: %s %q is already a dashboard key", path, what, key)
+	}
+	if by, dup := claimed[key]; dup {
+		return fmt.Errorf("%s: %s %q is already taken by another %s", path, what, key, by)
+	}
+	claimed[key] = what
+	return nil
 }
 
 // reservedKeys are the keys handleKey claims. Kept beside the check that uses

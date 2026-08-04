@@ -164,3 +164,69 @@ create:
 		t.Error("a create entry with no type should be rejected")
 	}
 }
+
+// A misspelled key used to unmarshal into nothing at all, so the feature it was
+// meant to configure looked broken while the config looked fine.
+func TestLoadConfigRejectsAnUnknownKey(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+    limmit: 5
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a misspelled section key should be rejected")
+	}
+}
+
+// handleKey tries its own switch first, so a keybinding on j would never run.
+// Silently losing is worse than refusing to start.
+func TestLoadConfigRejectsAKeybindingOnADashboardKey(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+keybindings:
+  issues:
+    - key: j
+      command: open {{.IssueURL}}
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a keybinding on j should be rejected")
+	}
+}
+
+// Create keys are tried before issue keybindings, so the keybinding on the same
+// key is dead code the config author cannot see.
+func TestLoadConfigRejectsTwoEntriesOnTheSameKey(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+create:
+  - key: c
+    type: Task
+keybindings:
+  issues:
+    - key: c
+      command: open {{.IssueURL}}
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a key claimed twice should be rejected")
+	}
+}
+
+// A keybinding with no command would hand `sh -c` an empty string.
+func TestLoadConfigRejectsAKeybindingWithoutACommand(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+keybindings:
+  issues:
+    - key: o
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a keybinding with no command should be rejected")
+	}
+}

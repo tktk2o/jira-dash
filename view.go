@@ -43,10 +43,6 @@ const (
 	// before it. gh-dash divides its panes with one line rather than boxing the
 	// preview, which is also what lets the rule above span the terminal.
 	previewChrome = 3
-	// Lines renderHelp draws when the help is open. tableHeight subtracts it, so
-	// it has to match renderHelp exactly.
-	helpHeight = 3
-
 	// The prompt box, laid out like gh-dash's "Approve with comment…": a border,
 	// a title, a blank line, the input, a blank line, and the keys that work
 	// inside it. Everything but the input is fixed, so promptBoxChrome plus the
@@ -233,7 +229,7 @@ func renderQueryLine(m Model, width int) string {
 	indent := strings.Repeat(" ", leftMargin)
 	st := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4")))
-	return st.Render(indent + Truncate("jql  "+query, maxInt(0, width-leftMargin)))
+	return st.Render(indent + Truncate("jql  "+query, max(0, width-leftMargin)))
 }
 
 // renderColumnHeader labels the columns renderRow lays out, using the same
@@ -261,7 +257,7 @@ func renderColumnHeader(width int) string {
 // would stop lining up between rows.
 func renderRow(i Issue, width int, now time.Time, rs rowStyles) string {
 	chip := PriorityChip(i.Priority)
-	summary := chip + Truncate(i.Summary, maxInt(0, width-rowFixedWidth-runewidth.StringWidth(chip)))
+	summary := chip + Truncate(i.Summary, max(0, width-rowFixedWidth-runewidth.StringWidth(chip)))
 
 	// Padded and truncated before styling, then styled per segment: measuring a
 	// string that already holds colour sequences counts them as cells.
@@ -357,38 +353,131 @@ func renderFooter(m Model) string {
 	return st.footer.Render(fmt.Sprintf("%s · %d issues · r:refresh ?:help", state, len(s.visible())))
 }
 
+// helpEntry is one key and what it does, held as a pair rather than a formatted
+// string so the columns can be aligned across entries of wildly different
+// lengths - a configured command is many times the width of "q".
+type helpEntry struct{ keys, what string }
+
+// helpEntries is every key that works: the built-ins, then whatever the config
+// adds. The configured ones are here because the help used to summarise them as
+// "create keys come from the config", which left four working keys unnamed - and
+// that is how one of them came to be forgotten.
+func helpEntries(m Model) []helpEntry {
+	out := []helpEntry{
+		{"↑/k", "move up"},
+		{"↓/j", "move down"},
+		{"←/h", "previous section"},
+		{"→/l", "next section"},
+		{"gg", "first item"},
+		{"G", "last item"},
+		{"Ctrl+d", "preview page down"},
+		{"Ctrl+u", "preview page up"},
+		{"p", "toggle preview"},
+		{"r", "refresh section"},
+		{"/", "filter"},
+		{"esc", "clear filter"},
+		{"y", "copy key"},
+		{"Y", "copy url"},
+		{"?", "help"},
+		{"q", "quit"},
+	}
+	for _, ck := range m.cfg.Create {
+		out = append(out, helpEntry{ck.Key, "new " + ck.Type})
+	}
+	for _, kb := range m.cfg.Keybindings.Issues {
+		out = append(out, helpEntry{kb.Key, orDefault(kb.Name, kb.Command)})
+	}
+	return out
+}
+
+// helpColumnGap is the air between one column's description and the next
+// column's key.
+const helpColumnGap = 3
+
+// layoutHelp arranges the entries into aligned columns, filling each column top
+// to bottom before starting the next. That is gh-dash's layout, and it is why its
+// help stays readable at this many entries: the keys form one straight edge to
+// scan and the descriptions form another.
+//
+// The widest layout that fits is used. Columns are measured on their own
+// contents, so a column of "q" and "p" is not made as wide as one holding
+// "Ctrl+d".
+func layoutHelp(entries []helpEntry, width int, keyStyle, whatStyle lipgloss.Style) []string {
+	if len(entries) == 0 || width <= 0 {
+		return nil
+	}
+	for cols := 4; cols > 1; cols-- {
+		rows := (len(entries) + cols - 1) / cols
+		if lines, ok := helpGrid(entries, rows, width, keyStyle, whatStyle); ok {
+			return lines
+		}
+	}
+	// One column always fits: its descriptions are cut to whatever is left.
+	lines, _ := helpGrid(entries, len(entries), width, keyStyle, whatStyle)
+	return lines
+}
+
+// helpGrid lays the entries out column-major in columns of rows each, reporting
+// whether the result fitted the width.
+func helpGrid(entries []helpEntry, rows, width int, keyStyle, whatStyle lipgloss.Style) ([]string, bool) {
+	if rows <= 0 {
+		return nil, false
+	}
+	var columns [][]helpEntry
+	for start := 0; start < len(entries); start += rows {
+		columns = append(columns, entries[start:min(start+rows, len(entries))])
+	}
+
+	keyWidths, whatWidths := make([]int, len(columns)), make([]int, len(columns))
+	total := leftMargin
+	for c, column := range columns {
+		for _, e := range column {
+			keyWidths[c] = max(keyWidths[c], runewidth.StringWidth(e.keys))
+			whatWidths[c] = max(whatWidths[c], runewidth.StringWidth(e.what))
+		}
+		total += keyWidths[c] + 1 + whatWidths[c]
+		if c < len(columns)-1 {
+			total += helpColumnGap
+		}
+	}
+	if total > width && len(columns) > 1 {
+		return nil, false
+	}
+
+	lines := make([]string, rows)
+	for r := range rows {
+		var b strings.Builder
+		b.WriteString(strings.Repeat(" ", leftMargin))
+		spent := leftMargin
+		for c, column := range columns {
+			if r >= len(column) {
+				continue
+			}
+			if c > 0 {
+				b.WriteString(strings.Repeat(" ", helpColumnGap))
+				spent += helpColumnGap
+			}
+			b.WriteString(keyStyle.Render(runewidth.FillRight(column[r].keys, keyWidths[c]) + " "))
+			spent += keyWidths[c] + 1
+			// Cut here rather than widening the column: a configured command has no
+			// bound, and one long one would push every column after it off screen.
+			room := max(0, width-spent)
+			text := Truncate(column[r].what, room)
+			b.WriteString(whatStyle.Render(runewidth.FillRight(text, min(whatWidths[c], room))))
+			spent += runewidth.StringWidth(text)
+		}
+		// The trailing padding of the last column on a row is nothing but width.
+		lines[r] = strings.TrimRight(b.String(), " ")
+	}
+	return lines, true
+}
+
 // renderHelp expands the footer's "?:help" in place, below it, the way gh-dash
 // does. As a whole-screen replacement it took the list away to tell you how to
 // move around the list, and there was no way to try a key while reading it.
-//
-// The configured keys are listed by name, not summarised as "create keys come
-// from the config" - which was what the help said while four working keys went
-// unnamed, so the features they run were invisible to the person who set them up.
-//
-// Exactly helpHeight lines, so the table can be given the room this takes.
 func renderHelp(m Model, width int) string {
-	configured := make([]string, 0, len(m.cfg.Create)+len(m.cfg.Keybindings.Issues))
-	for _, ck := range m.cfg.Create {
-		configured = append(configured, ck.Key+"  new "+ck.Type)
-	}
-	for _, kb := range m.cfg.Keybindings.Issues {
-		configured = append(configured, kb.Key+"  "+orDefault(kb.Name, kb.Command))
-	}
-	third := "no keys configured"
-	if len(configured) > 0 {
-		third = strings.Join(configured, " · ")
-	}
-
-	lines := []string{
-		"h/l ←/→ tab  section · j/k gg/G  move · /  filter · esc  clear filter",
-		"p  preview · ctrl+d/ctrl+u  scroll preview · y/Y  copy key/url · r  refresh · q  quit",
-		third,
-	}
-	for i, line := range lines {
-		lines[i] = strings.Repeat(" ", leftMargin) +
-			Truncate(line, maxInt(0, width-leftMargin))
-	}
-	return strings.Join(lines, "\n")
+	st := newStyles(m.cfg.Theme)
+	return strings.Join(layoutHelp(helpEntries(m), width, st.header, st.footer), "\n")
 }
 
 // renderCreatePrompt states where the new issue will land before it is created,
@@ -456,7 +545,7 @@ func newPromptInput(t Theme) textarea.Model {
 func renderPromptBox(m Model, title, keys string, width int) string {
 	st := newStyles(m.cfg.Theme)
 	// 2 for the border's own columns, 2 for the padding inside it.
-	inner := maxInt(0, width-4)
+	inner := max(0, width-4)
 
 	body := strings.Join([]string{
 		st.header.Render(Truncate(title, inner)),
@@ -548,7 +637,7 @@ func (m Model) View() string {
 	// panes instead of stopping in mid-air over the preview.
 	sections := []string{
 		renderTabs(m),
-		st.rule.Render(strings.Repeat("━", maxInt(0, m.width))),
+		st.rule.Render(strings.Repeat("━", max(0, m.width))),
 		renderQueryLine(m, tableWidth),
 		st.header.Render(strings.Repeat(" ", leftMargin) + renderColumnHeader(rowWidth)),
 		body,
@@ -593,10 +682,18 @@ func (m Model) promptLines() int {
 // compares it before and after a key to decide whether the preview needs
 // resizing, so nothing else has to remember to.
 func (m Model) chromeLines() int {
-	if m.showHelp {
-		return m.promptLines() + helpHeight
+	return m.promptLines() + m.helpHeight()
+}
+
+// helpHeight is how many lines the help takes. It depends on how many keys the
+// config adds and how wide the terminal is, so it is counted off the same layout
+// that draws it rather than fixed at a number the layout has to match.
+func (m Model) helpHeight() int {
+	if !m.showHelp {
+		return 0
 	}
-	return m.promptLines()
+	st := newStyles(m.cfg.Theme)
+	return len(layoutHelp(helpEntries(m), m.tableWidth(), st.header, st.footer))
 }
 
 // tableHeight is how many row lines fit once the chrome has taken its share.
@@ -605,11 +702,7 @@ func (m Model) chromeLines() int {
 // already lost it.
 func (m Model) tableHeight() int {
 	// The tab strip, the rule, the query line, the column header, the footer.
-	chrome := 5 + m.promptLines()
-	if m.showHelp {
-		chrome += helpHeight
-	}
-	return maxInt(1, m.height-chrome)
+	return max(1, m.height-5-m.chromeLines())
 }
 
 // windowRows keeps the cursor on screen by holding it in the middle of the

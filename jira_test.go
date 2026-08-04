@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -390,5 +392,36 @@ func TestCLICommentsReadsTheThread(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Author != "甲" {
 		t.Fatalf("comments = %+v", got)
+	}
+}
+
+// Jira returns null for a time it does not have, and the four-character string
+// "null" is a different thing - only the JSON decoder can tell them apart.
+func TestJiraTimeAcceptsNullAndRejectsNonsense(t *testing.T) {
+	var payload struct {
+		Updated JiraTime `json:"updated"`
+	}
+	if err := json.Unmarshal([]byte(`{"updated":null}`), &payload); err != nil {
+		t.Fatalf("a null time should unmarshal as absent: %v", err)
+	}
+	if !payload.Updated.IsZero() {
+		t.Error("a null time should be the zero time")
+	}
+	if err := json.Unmarshal([]byte(`{"updated":"not a time"}`), &payload); err == nil {
+		t.Error("an unparseable time should be an error, not the zero time")
+	}
+	if err := json.Unmarshal([]byte(`{"updated":12345}`), &payload); err == nil {
+		t.Error("a number should be an error, not a time")
+	}
+}
+
+// The message the footer shows must name what went wrong, and stay one line.
+func TestCLIReportsATimeoutAsSuch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+
+	_, err := (CLI{Bin: "./testdata/fake-jira-ok.sh"}).Search(ctx, "project = ABC", 1)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a timed-out call should wrap the deadline error, got: %v", err)
 	}
 }
