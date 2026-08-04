@@ -396,7 +396,7 @@ func TestCreateTakesProjectAndSprintFromTheRow(t *testing.T) {
 	for _, r := range "new thing" {
 		m = press(m, string(r))
 	}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = next.(Model)
 	if cmd == nil {
 		t.Fatal("enter should submit")
@@ -423,7 +423,7 @@ func TestCreateKeyChoosesTheIssueType(t *testing.T) {
 
 	m = press(m, "C")
 	m = press(m, "x")
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	_ = next
 	cmd()
 
@@ -449,8 +449,8 @@ func TestCreateIsCancelledByEsc(t *testing.T) {
 	}
 	// A cancelled draft must not come back on the next c.
 	m = press(m, "c")
-	if m.createDraft != "" {
-		t.Errorf("draft = %q, want empty", m.createDraft)
+	if got := m.prompt.Value(); got != "" {
+		t.Errorf("draft = %q, want empty", got)
 	}
 }
 
@@ -461,7 +461,7 @@ func TestCreateRefusesAnEmptySummary(t *testing.T) {
 	m := createTestModel(t, &got)
 
 	m = press(m, "c")
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = next.(Model)
 
 	if cmd != nil {
@@ -648,11 +648,11 @@ func TestAskRefusesAnEmptyInstruction(t *testing.T) {
 	m := askTestModel(t)
 	m = press(m, "a")
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = next.(Model)
 
 	if cmd != nil || !m.asking {
-		t.Error("enter on an empty instruction should do nothing and keep the prompt")
+		t.Error("Ctrl+d on an empty instruction should do nothing and keep the box open")
 	}
 }
 
@@ -666,8 +666,8 @@ func TestAskEscapeClosesThePrompt(t *testing.T) {
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = next.(Model)
 
-	if m.asking || m.askDraft != "" {
-		t.Errorf("esc should cancel: asking=%v draft=%q", m.asking, m.askDraft)
+	if m.asking || m.prompt.Value() != "" {
+		t.Errorf("esc should cancel: asking=%v draft=%q", m.asking, m.prompt.Value())
 	}
 }
 

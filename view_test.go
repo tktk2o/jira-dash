@@ -230,9 +230,9 @@ func TestViewDropsPreviewOnNarrowTerminal(t *testing.T) {
 	}
 }
 
-// The project and sprint are inherited, not typed, so the prompt has to show
-// where the issue will land before enter is pressed.
-func TestCreatePromptNamesItsTarget(t *testing.T) {
+// The project and sprint are inherited, not typed, so the box has to say where
+// the issue will land before it is submitted.
+func TestCreateBoxNamesItsTarget(t *testing.T) {
 	var got []NewIssueRequest
 	m := createTestModel(t, &got)
 	m = press(m, "c")
@@ -240,26 +240,35 @@ func TestCreatePromptNamesItsTarget(t *testing.T) {
 		m = press(m, string(r))
 	}
 
-	line := renderCreatePrompt(m)
+	out := plain(m.View())
 	for _, want := range []string{"Task", "ABC", "Team 0803-0807", "hi"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("prompt %q is missing %q", line, want)
+		if !strings.Contains(out, want) {
+			t.Errorf("the box is missing %q: %q", want, out)
+		}
+	}
+	// The keys that work inside it are named there, because they are not the ones
+	// that work anywhere else.
+	for _, want := range []string{"Ctrl+d", "esc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the box should state %q: %q", want, out)
 		}
 	}
 }
 
-// It replaces the filter line rather than adding one, so opening it must not
-// make the view taller and push the table up.
-func TestCreatePromptDoesNotAddALine(t *testing.T) {
+// The box is framed like gh-dash's approve comment, and takes its height out of
+// the table rather than off the bottom of the terminal.
+func TestCreateBoxIsFramedAndFitsTheScreen(t *testing.T) {
 	var got []NewIssueRequest
 	m := createTestModel(t, &got)
-	before := strings.Count(m.View(), "\n")
 
 	m = press(m, "c")
 
-	if after := strings.Count(m.View(), "\n"); after != before+1 {
-		t.Errorf("view went from %d to %d lines; the prompt should add exactly one",
-			before, after)
+	out := plain(m.View())
+	if !strings.Contains(out, "\u256d") || !strings.Contains(out, "\u2570") {
+		t.Errorf("the prompt should be framed: %q", out)
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > m.height {
+		t.Errorf("the view is %d lines on a %d line terminal", lines, m.height)
 	}
 }
 
@@ -517,29 +526,52 @@ func TestKeysStillWorkWhileTheHelpIsOpen(t *testing.T) {
 
 // Rows used to run off the bottom of the terminal, which pushed the tab strip
 // off the top: a 41-issue section on a 45-line terminal had already lost it.
+//
+// Every state that changes how tall the chrome is has to tell the preview, and
+// the preview and the table sit side by side - so the taller of the two decides
+// where the footer lands. Each state is driven through its real key here, which
+// is what makes a missed resize call fail in this test rather than on screen.
 func TestViewNeverDrawsMoreLinesThanTheTerminalHas(t *testing.T) {
-	m := newTestModel(t, fakeSearcher{})
-	keys := make([]string, 0, 80)
-	for i := 0; i < 80; i++ {
-		keys = append(keys, "ABC-"+strconv.Itoa(i))
+	base := func(t *testing.T) Model {
+		m := newTestModel(t, fakeSearcher{})
+		m.cfg.Create = []CreateKey{{Key: "c", Type: "Task"}}
+		m.cfg.Keybindings.Issues = []Keybinding{
+			{Key: "a", Name: "ask", Prompt: true, Command: "true"},
+		}
+		keys := make([]string, 0, 80)
+		for i := 0; i < 80; i++ {
+			keys = append(keys, "ABC-"+strconv.Itoa(i))
+		}
+		next, _ := m.Update(fetchedMsg{idx: 0, issues: issues(keys...), at: fixedNow()()})
+		return settled(next.(Model))
 	}
-	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues(keys...), at: fixedNow()()})
-	m = settled(next.(Model))
 
-	// Toggled through the key, not the field: the preview is resized on the way
-	// through, and the two heights drifting is exactly the bug this guards.
-	for _, help := range []bool{false, true} {
-		if m.showHelp != help {
-			m = press(m, "?")
-		}
-		if got := strings.Count(m.View(), "\n") + 1; got > m.height {
-			t.Errorf("showHelp=%v: rendered %d lines on a %d line terminal", help, got, m.height)
-		}
-		// Whatever gets cut, it must not be the row the cursor is on.
-		m.sections[0].cursor = 79
-		if !strings.Contains(m.View(), "ABC-79") {
-			t.Errorf("showHelp=%v: the selected row scrolled off screen", help)
-		}
+	for _, tc := range []struct {
+		name string
+		keys []string
+	}{
+		{"nothing open", nil},
+		{"help", []string{"?"}},
+		{"create box", []string{"c"}},
+		{"ask box", []string{"a"}},
+		{"ask box and help", []string{"?", "a"}},
+		{"filter", []string{"/"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := base(t)
+			for _, k := range tc.keys {
+				m = press(m, k)
+			}
+
+			if got := strings.Count(m.View(), "\n") + 1; got > m.height {
+				t.Errorf("rendered %d lines on a %d line terminal", got, m.height)
+			}
+			// Whatever gets cut, it must not be the row the cursor is on.
+			m.sections[0].cursor = 79
+			if !strings.Contains(plain(m.View()), "ABC-79") {
+				t.Error("the selected row scrolled off screen")
+			}
+		})
 	}
 }
 

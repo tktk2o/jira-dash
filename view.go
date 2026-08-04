@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -45,6 +46,18 @@ const (
 	// Lines renderHelp draws when the help is open. tableHeight subtracts it, so
 	// it has to match renderHelp exactly.
 	helpHeight = 3
+
+	// The prompt box, laid out like gh-dash's "Approve with comment…": a border,
+	// a title, a blank line, the input, a blank line, and the keys that work
+	// inside it. Everything but the input is fixed, so promptBoxChrome plus the
+	// input's height is the whole box.
+	promptBoxChrome = 6
+	// A Jira summary is one line - `jira create -s` takes one string - so the
+	// create box does not offer more.
+	createInputHeight = 1
+	// An instruction is worth more room: "do X, and note Y" is two thoughts, and
+	// on one line you cannot see the first while typing the second.
+	askInputHeight = 3
 )
 
 // Two colours gh-dash uses that the theme config has no name for: the blue it
@@ -381,7 +394,7 @@ func renderHelp(m Model, width int) string {
 // renderCreatePrompt states where the new issue will land before it is created,
 // because the project and sprint are inherited rather than typed: without them
 // on screen there is nothing to check against before pressing enter.
-func renderCreatePrompt(m Model) string {
+func createPromptTitle(m Model) string {
 	target := ""
 	if row, ok := m.sections[m.active].selected(); ok {
 		target = row.Project.Key
@@ -389,13 +402,13 @@ func renderCreatePrompt(m Model) string {
 			target += " / " + sprint.Name
 		}
 	}
-	return fmt.Sprintf("new %s in %s: %s_", m.createType, target, m.createDraft)
+	return fmt.Sprintf("new %s in %s…", m.createType, target)
 }
 
-// renderAskPrompt names the issue the instruction will be about, because the
-// prompt sits at the bottom of the screen and the row it came from may have
-// scrolled out of the window by the time you finish typing.
-func renderAskPrompt(m Model) string {
+// askPromptTitle names the issue the instruction will be about, because the box
+// sits at the bottom of the screen and the row it came from may have scrolled
+// out of the window by the time you finish typing.
+func askPromptTitle(m Model) string {
 	label := "ask"
 	for _, kb := range m.cfg.Keybindings.Issues {
 		if kb.Key == m.askKey {
@@ -406,18 +419,69 @@ func renderAskPrompt(m Model) string {
 	if row, ok := m.sections[m.active].selected(); ok {
 		key = row.Key
 	}
-	return fmt.Sprintf("%s about %s: %s_", label, key, m.askDraft)
+	return fmt.Sprintf("%s about %s…", label, key)
+}
+
+// newPromptInput is the box's input. Line numbers and the highlighted current
+// line are gh-dash's, and they are what make a multi-line box read as an editor
+// rather than as a wrapped line.
+func newPromptInput(t Theme) textarea.Model {
+	primary := lipgloss.Color(orDefault(t.Colors.Text.Primary, "#f8f8f2"))
+	secondary := lipgloss.Color(orDefault(t.Colors.Text.Secondary, "#6272a4"))
+
+	ta := textarea.New()
+	ta.ShowLineNumbers = true
+	// The textarea draws its own per-line prompt as well as the line number; one
+	// marker is enough.
+	ta.Prompt = ""
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(primary)
+	ta.FocusedStyle.LineNumber = lipgloss.NewStyle().Foreground(secondary)
+	ta.FocusedStyle.CursorLineNumber = lipgloss.NewStyle().Foreground(secondary)
+	// Near-black rather than the selection colour: the row cursor is elsewhere on
+	// screen and two things claiming to be "where you are" is one too many.
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color(faintRule))
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(secondary)
+	// The end-of-buffer tildes say "this box is taller than what you typed",
+	// which is noise on a box sized to the task.
+	ta.EndOfBufferCharacter = ' '
+	return ta
+}
+
+// renderPromptBox draws the box gh-dash puts at the bottom of the screen for an
+// approve comment: a title, the input, and the keys that work inside it.
+//
+// The keys are named in the box rather than left to the help, because they are
+// not the keys that work anywhere else - enter inserts a newline here, and the
+// only way out is stated on the line above the border.
+func renderPromptBox(m Model, title, keys string, width int) string {
+	st := newStyles(m.cfg.Theme)
+	// 2 for the border's own columns, 2 for the padding inside it.
+	inner := maxInt(0, width-4)
+
+	body := strings.Join([]string{
+		st.header.Render(Truncate(title, inner)),
+		"",
+		m.prompt.View(),
+		"",
+		st.footer.Render(Truncate(keys, inner)),
+	}, "\n")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Border.Primary, "#bd93f9"))).
+		Padding(0, 1).
+		Width(inner).
+		Render(body)
 }
 
 func (m Model) View() string {
 	st := newStyles(m.cfg.Theme)
 	s := m.sections[m.active]
 
-	tableWidth := m.width
+	// Through the model, so the prompt box - which is sized when it opens, not
+	// when it draws - cannot disagree with the table about how wide the pane is.
 	showPreview := PreviewVisible(m.previewOpen, m.width, m.cfg.Defaults.Preview.Width)
-	if showPreview {
-		tableWidth = m.width - int(float64(m.width)*m.cfg.Defaults.Preview.Width)
-	}
+	tableWidth := m.tableWidth()
 
 	rows := make([]string, 0, len(s.visible()))
 	now := m.now()
@@ -447,15 +511,18 @@ func (m Model) View() string {
 		rows = append(rows, st.footer.Render(placeholder))
 	}
 
-	// The create prompt takes the filter's line instead of adding one, so the
-	// table does not shift by a row when it opens. It is resolved before the rows
-	// are windowed because whether it is there decides how many rows fit.
+	// Resolved before the rows are windowed: how tall the prompt is decides how
+	// many rows fit.
 	promptLine, prompting := "", true
 	switch {
 	case m.creating:
-		promptLine = renderCreatePrompt(m)
+		promptLine = renderPromptBox(m, createPromptTitle(m),
+			"Ctrl+d submit ⋅ esc cancel", tableWidth)
+		prompting = false
 	case m.asking:
-		promptLine = renderAskPrompt(m)
+		promptLine = renderPromptBox(m, askPromptTitle(m),
+			"Ctrl+d submit ⋅ enter newline ⋅ esc cancel", tableWidth)
+		prompting = false
 	case m.filtering:
 		promptLine = "/" + m.filterDraft
 	case s.filter != "":
@@ -464,7 +531,7 @@ func (m Model) View() string {
 		prompting = false
 	}
 
-	rows = windowRows(rows, s.cursor, m.tableHeight(promptLine != ""))
+	rows = windowRows(rows, s.cursor, m.tableHeight())
 	table := strings.Join(rows, "\n")
 	body := table
 	if showPreview {
@@ -505,16 +572,40 @@ func (m Model) View() string {
 	return strings.Join(sections, "\n")
 }
 
+// promptLines is how many lines the prompt currently occupies. It is derived
+// from the same state View renders from, so the two cannot disagree about how
+// much room is left for the table.
+func (m Model) promptLines() int {
+	switch {
+	case m.creating:
+		return promptBoxChrome + createInputHeight
+	case m.asking:
+		return promptBoxChrome + askInputHeight
+	case m.filtering, m.sections[m.active].filter != "":
+		// The filter stays one line. It is a phrase, not a message, and a box
+		// around it would take eight lines of the list to hold six characters.
+		return 1
+	}
+	return 0
+}
+
+// chromeLines is everything above and below the table that varies. Update
+// compares it before and after a key to decide whether the preview needs
+// resizing, so nothing else has to remember to.
+func (m Model) chromeLines() int {
+	if m.showHelp {
+		return m.promptLines() + helpHeight
+	}
+	return m.promptLines()
+}
+
 // tableHeight is how many row lines fit once the chrome has taken its share.
 // Without this the rows simply ran past the bottom of the terminal and the tab
 // strip was pushed off the top - a 41-issue section on a 45-line terminal had
 // already lost it.
-func (m Model) tableHeight(hasPrompt bool) int {
+func (m Model) tableHeight() int {
 	// The tab strip, the rule, the query line, the column header, the footer.
-	chrome := 5
-	if hasPrompt {
-		chrome++
-	}
+	chrome := 5 + m.promptLines()
 	if m.showHelp {
 		chrome += helpHeight
 	}

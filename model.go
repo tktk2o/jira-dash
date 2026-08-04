@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -115,16 +116,19 @@ type Model struct {
 	// The create prompt is the one place the dashboard writes to Jira. It holds
 	// only the summary: the type comes from which key opened it, and the project
 	// and sprint from the row the cursor was on.
-	creating    bool
-	createDraft string
-	createType  string
+	creating   bool
+	createType string
 
 	// The ask prompt collects an instruction to hand a configured command, which
 	// in practice means handing it to Claude. askKey is which keybinding opened
 	// it: the command to run lives in the config, not here.
-	asking   bool
-	askDraft string
-	askKey   string
+	asking bool
+	askKey string
+
+	// prompt is the input both boxes share. One textarea rather than a draft
+	// string each: it is what gives the box line numbers, a cursor that moves,
+	// and multi-line editing, none of which a string accumulating runes had.
+	prompt textarea.Model
 
 	pendingG bool
 	showHelp bool
@@ -155,6 +159,9 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 		previewOpen: *cfg.Defaults.Preview.Open,
 		detail:      viewport.New(0, 0),
 		spinner:     newSpinner(cfg.Theme),
+		// Built here, not on first use: a zero textarea.Model has nil internals
+		// and panics the moment a prompt opens.
+		prompt: newPromptInput(cfg.Theme),
 	}
 
 	// Seed from cache so the first frame is instant; the fetch in Init then
@@ -201,14 +208,26 @@ func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
 // Its height comes from tableHeight rather than its own arithmetic, because the
 // two sit side by side and the taller one decides how far down the screen the
 // footer lands. Computed separately they drifted, and opening the help pushed
-// two lines off the bottom of the terminal. tableHeight is asked for its
-// smallest answer - the one with the prompt line open - since the prompt appears
-// without the viewport being resized. Nothing is taken off vertically: the
+// two lines off the bottom of the terminal. Nothing is taken off vertically: the
 // divider is a left border only, so it adds no lines.
+//
+// Update owns calling this, by comparing chromeLines across a key. Asking each
+// transition to remember instead lost `/`, and the footer fell off the bottom of
+// the terminal - TestViewNeverDrawsMoreLinesThanTheTerminalHas covers every
+// prompt state so that class of miss fails there rather than on screen.
 func (m *Model) resizeDetail() {
 	previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
 	m.detail.Width = maxInt(0, previewWidth-previewChrome)
-	m.detail.Height = maxInt(0, m.tableHeight(true))
+	m.detail.Height = maxInt(0, m.tableHeight())
+}
+
+// tableWidth is the pane the table gets: the whole terminal, less the preview
+// when one is showing.
+func (m Model) tableWidth() int {
+	if !PreviewVisible(m.previewOpen, m.width, m.cfg.Defaults.Preview.Width) {
+		return m.width
+	}
+	return m.width - int(float64(m.width)*m.cfg.Defaults.Preview.Width)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -303,7 +322,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		// The preview and the table stand side by side, so whichever is taller
+		// decides where the footer lands - and the chrome above and below the table
+		// changes height as the help, the prompts and a section's filter come and
+		// go. Resizing here, once, rather than at each of those transitions: the
+		// version that asked every one of them to remember dropped `/`, and the
+		// footer fell off the bottom of the terminal.
+		before := m.chromeLines()
+		next, cmd := m.handleKey(msg)
+		updated, ok := next.(Model)
+		if !ok {
+			return next, cmd
+		}
+		if updated.chromeLines() != before {
+			updated.resizeDetail()
+		}
+		return updated, cmd
 	}
 	return m, nil
 }
@@ -422,10 +456,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "Y":
 		return m, m.copySelected(func(i Issue) string { return i.URL })
 	case "?":
-		// The help opens below the footer rather than over the screen, so it takes
-		// lines the preview was using and the pane has to be told.
+		// The help opens below the footer rather than over the screen. Update
+		// notices the chrome got taller and resizes the preview.
 		m.showHelp = !m.showHelp
-		m.resizeDetail()
 		return m, nil
 	}
 
@@ -454,45 +487,30 @@ func (m Model) openAskPrompt(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.asking = true
-	m.askDraft = ""
 	m.askKey = key
+	m.openPrompt(askInputHeight)
 	return m, nil
 }
 
 func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
-	case tea.KeyEnter:
+	case tea.KeyCtrlD:
 		// An empty instruction would hand over the issue and nothing to do with
-		// it, which is what the keys without prompt: true are for. The prompt
-		// stays open rather than launching something pointless.
-		if strings.TrimSpace(m.askDraft) == "" {
+		// it, which is what the keys without prompt: true are for. The box stays
+		// open rather than launching something pointless.
+		instruction := strings.TrimSpace(m.prompt.Value())
+		if instruction == "" {
 			return m, nil
 		}
-		key, draft := m.askKey, strings.TrimSpace(m.askDraft)
-		m.asking = false
-		m.askDraft = ""
-		m.askKey = ""
-		return m.runUserKeybindingWith(key, draft)
+		key := m.askKey
+		m.closePrompt()
+		return m.runUserKeybindingWith(key, instruction)
 
-	case tea.KeyEsc:
-		m.asking = false
-		m.askDraft = ""
-		m.askKey = ""
-		return m, nil
-	case tea.KeyBackspace:
-		if m.askDraft != "" {
-			r := []rune(m.askDraft)
-			m.askDraft = string(r[:len(r)-1])
-		}
-		return m, nil
-	case tea.KeyRunes, tea.KeySpace:
-		m.askDraft += string(msg.Runes)
-		if msg.Type == tea.KeySpace {
-			m.askDraft += " "
-		}
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.closePrompt()
 		return m, nil
 	}
-	return m, nil
+	return m.updatePrompt(msg)
 }
 
 // AskPrompt assembles what the configured command receives as {{.Prompt}}: the
@@ -514,57 +532,74 @@ func (m Model) openCreatePrompt(issueType string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.creating = true
-	m.createDraft = ""
 	m.createType = issueType
+	m.openPrompt(createInputHeight)
 	return m, nil
 }
 
+// handleCreateKey routes keys to the box's input, keeping only the two that
+// leave it. Ctrl+d rather than enter submits, because enter now inserts a
+// newline inside the box - the box states both on the line above its border.
 func (m Model) handleCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
-	case tea.KeyEnter:
+	case tea.KeyCtrlD:
 		// `jira create` requires -s, so an empty summary is refused here rather
-		// than coming back as a CLI failure 360ms later. The prompt stays open.
-		if strings.TrimSpace(m.createDraft) == "" {
+		// than coming back as a CLI failure 360ms later. The box stays open.
+		summary := strings.TrimSpace(m.prompt.Value())
+		if summary == "" {
 			return m, nil
 		}
 		row, ok := m.sections[m.active].selected()
 		if !ok {
-			m.creating = false
+			m.closePrompt()
 			m.status = "the row this create was based on is gone"
 			return m, nil
 		}
 		req := NewIssueRequest{
 			Project: row.Project.Key,
 			Type:    m.createType,
-			Summary: strings.TrimSpace(m.createDraft),
+			Summary: summary,
 		}
 		if sprint, ok := row.CurrentSprint(); ok {
 			req.SprintID = sprint.ID
 		}
 
-		m.creating = false
-		m.createDraft = ""
+		m.closePrompt()
 		m.status = "creating " + req.Type + "..."
 		return m, createIssue(m.searcher, m.active, req)
 
-	case tea.KeyEsc:
-		m.creating = false
-		m.createDraft = ""
-		return m, nil
-	case tea.KeyBackspace:
-		if m.createDraft != "" {
-			r := []rune(m.createDraft)
-			m.createDraft = string(r[:len(r)-1])
-		}
-		return m, nil
-	case tea.KeyRunes, tea.KeySpace:
-		m.createDraft += string(msg.Runes)
-		if msg.Type == tea.KeySpace {
-			m.createDraft += " "
-		}
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.closePrompt()
 		return m, nil
 	}
-	return m, nil
+	return m.updatePrompt(msg)
+}
+
+// updatePrompt hands a key to the box's input. Everything the box does not claim
+// belongs to the textarea - which is what makes the cursor keys, word deletion
+// and the rest work without this file knowing about any of them.
+func (m Model) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.prompt, cmd = m.prompt.Update(msg)
+	return m, cmd
+}
+
+// closePrompt is a method rather than the same three assignments at each exit.
+func (m *Model) closePrompt() {
+	m.creating, m.asking, m.askKey = false, false, ""
+	m.prompt.Reset()
+	m.prompt.Blur()
+}
+
+// openPrompt sizes the box's input and focuses it. The height is the difference
+// between the two boxes: a Jira summary is one line, an instruction is not.
+func (m *Model) openPrompt(height int) {
+	m.prompt.Reset()
+	m.prompt.SetHeight(height)
+	m.prompt.Focus()
+	// The box is as wide as the table, less its border, its padding and the
+	// column the line numbers take.
+	m.prompt.SetWidth(maxInt(1, m.tableWidth()-6))
 }
 
 // createdMsg reports the outcome. idx is the section the create was launched
