@@ -44,6 +44,10 @@ func Truncate(s string, w int) string {
 	return runewidth.Truncate(s, w, "…")
 }
 
+// TypeIcon returns a two-cell icon for every type, including the fallback.
+// Mixing widths here would shift every column to its right depending on the
+// issue type, so candidates that compute as one cell are avoided: ⚙️ carries a
+// variation selector, 🗂 is one cell, and • is one cell.
 func TypeIcon(issueType string) string {
 	switch strings.ToLower(issueType) {
 	case "bug":
@@ -51,11 +55,11 @@ func TypeIcon(issueType string) string {
 	case "story":
 		return "📘"
 	case "task", "sub-task", "subtask":
-		return "⚙️"
+		return "🔧"
 	case "epic":
-		return "🗂"
+		return "🧩"
 	default:
-		return "•"
+		return "📄"
 	}
 }
 

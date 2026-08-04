@@ -57,14 +57,27 @@ func TestTypeIcon(t *testing.T) {
 		"Bug":      "🐞",
 		"bug":      "🐞",
 		"Story":    "📘",
-		"Task":     "⚙️",
-		"Sub-task": "⚙️",
-		"Epic":     "🗂",
-		"Whatever": "•",
-		"":         "•",
+		"Task":     "🔧",
+		"Sub-task": "🔧",
+		"Epic":     "🧩",
+		"Whatever": "📄",
+		"":         "📄",
 	} {
 		if got := TypeIcon(input); got != want {
 			t.Errorf("TypeIcon(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// Every icon must occupy the same number of cells, or the column after it
+// shifts depending on the issue type. Measured with runewidth v0.0.27: the
+// obvious picks ⚙️ (U+2699 plus a variation selector) and 🗂 compute as 1 cell
+// while most terminals draw them as 2, and • is genuinely 1 — all three would
+// misalign the table.
+func TestTypeIconsAreAllTwoCellsWide(t *testing.T) {
+	for _, input := range []string{"Bug", "Story", "Task", "Sub-task", "Epic", "Whatever", ""} {
+		if got := runewidth.StringWidth(TypeIcon(input)); got != 2 {
+			t.Errorf("TypeIcon(%q) is %d cells wide, want 2", input, got)
 		}
 	}
 }
