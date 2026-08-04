@@ -70,6 +70,55 @@ func TestRenderRowWidthIsIndependentOfScript(t *testing.T) {
 	}
 }
 
+// A row must never draw wider than the width it was handed, or the table
+// spills past its pane and pushes the preview off screen. The fixed columns
+// alone are 35 cells, so the narrow cases are the interesting ones.
+func TestRenderRowNeverExceedsItsWidth(t *testing.T) {
+	now := time.Now()
+	issue := Issue{Key: "ABC-1234", Summary: strings.Repeat("長い要約", 40), Status: "In Progress", Type: "Bug"}
+
+	for _, width := range []int{120, 100, 60, 45, 40, 20, 5} {
+		if got := runewidth.StringWidth(renderRow(issue, width, now)); got > width {
+			t.Errorf("renderRow at width %d rendered %d cells", width, got)
+		}
+	}
+}
+
+// View draws the cursor marker itself, so the marker plus the row has to fit
+// the pane - otherwise every line is two cells too wide.
+func TestViewRowsFitTheTableWidth(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.width, m.previewOpen = 200, false
+	next, _ := m.Update(fetchedMsg{
+		idx:    0,
+		issues: []Issue{{Key: "ABC-1", Summary: strings.Repeat("長い要約", 40), Status: "Open", Type: "Bug"}},
+		at:     time.Now(),
+	})
+	m = next.(Model)
+
+	for _, line := range strings.Split(m.View(), "\n") {
+		if got := runewidth.StringWidth(line); got > m.width {
+			t.Errorf("a rendered line is %d cells wide, want <= %d: %q", got, m.width, line)
+		}
+	}
+}
+
+func TestCommandRanMsgReportsFailureOnly(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+
+	next, _ := m.Update(commandRanMsg{key: "R", err: errTest})
+	m = next.(Model)
+	if !strings.Contains(m.status, "kaboom") || !strings.Contains(m.status, "R") {
+		t.Errorf("status = %q, want the key and the error", m.status)
+	}
+
+	next, _ = m.Update(commandRanMsg{key: "R"})
+	m = next.(Model)
+	if m.status != "" {
+		t.Errorf("status = %q, want it cleared on success", m.status)
+	}
+}
+
 func TestCopiedMsgReportsOnTheFooter(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 

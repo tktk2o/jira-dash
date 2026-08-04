@@ -19,6 +19,9 @@ const (
 	colStatus  = 13
 	colUpdated = 5
 	colGaps    = 4 // single spaces between the five columns
+
+	// "→ " / "  " drawn by View in front of every row.
+	cursorMarkerWidth = 2
 )
 
 type styles struct {
@@ -76,16 +79,22 @@ func renderTabs(m Model) string {
 // would stop lining up between rows.
 func renderRow(i Issue, width int, now time.Time) string {
 	summaryWidth := width - colKey - colIcon - colStatus - colUpdated - colGaps
-	if summaryWidth < 10 {
-		summaryWidth = 10
+	if summaryWidth < 0 {
+		summaryWidth = 0
 	}
-	return strings.Join([]string{
+	row := strings.Join([]string{
 		runewidth.FillRight(Truncate(i.Key, colKey), colKey),
 		runewidth.FillRight(TypeIcon(i.Type), colIcon),
 		runewidth.FillRight(Truncate(i.Summary, summaryWidth), summaryWidth),
 		runewidth.FillRight(Truncate(i.Status, colStatus), colStatus),
 		runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated),
 	}, " ")
+
+	// The fixed columns alone are 35 cells, so a very narrow terminal cannot
+	// fit them. Cutting the assembled row keeps the invariant that a row never
+	// draws wider than the width it was handed - without it the table spills
+	// past the pane and the preview beside it gets pushed off screen.
+	return Truncate(row, width)
 }
 
 func renderFooter(m Model) string {
@@ -139,8 +148,12 @@ func (m Model) View() string {
 
 	rows := make([]string, 0, len(s.visible()))
 	now := m.now()
+	// The cursor marker is drawn outside renderRow, so it has to come out of
+	// the row's budget or every line would be two cells wider than the pane it
+	// was measured for.
+	rowWidth := tableWidth - cursorMarkerWidth
 	for idx, issue := range s.visible() {
-		line := renderRow(issue, tableWidth, now)
+		line := renderRow(issue, rowWidth, now)
 		if idx == s.cursor {
 			rows = append(rows, st.selectedRow.Render("→ "+line))
 			continue
@@ -172,12 +185,18 @@ func (m Model) View() string {
 	return strings.Join(sections, "\n")
 }
 
-// copiedMsg reports the outcome of a clipboard write. It is its own type
-// because reusing the detail-loading message as a "nothing happened" signal
-// would make Update's contract a guessing game.
+// copiedMsg reports the outcome of a clipboard write, and commandRanMsg the
+// outcome of a configured keybinding. Each is its own type because reusing the
+// detail-loading message as a "nothing happened" signal would make Update's
+// contract a guessing game.
 type copiedMsg struct {
 	value string
 	err   error
+}
+
+type commandRanMsg struct {
+	key string
+	err error
 }
 
 // copySelected puts a field of the selected issue on the clipboard via pbcopy.
@@ -215,10 +234,7 @@ func (m Model) runUserKeybinding(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.ExecProcess(exec.Command("sh", "-c", rendered), func(err error) tea.Msg {
-			if err != nil {
-				return issueLoadedMsg{err: err}
-			}
-			return issueLoadedMsg{}
+			return commandRanMsg{key: kb.Key, err: err}
 		})
 	}
 	return m, nil

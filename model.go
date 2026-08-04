@@ -175,6 +175,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "copied " + msg.value
 		return m, nil
 
+	case commandRanMsg:
+		if msg.err != nil {
+			m.status = msg.key + ": " + msg.err.Error()
+			return m, nil
+		}
+		m.status = ""
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
