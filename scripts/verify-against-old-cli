@@ -169,6 +169,9 @@ run_both get "$key1" -f json
 # The other direction - sprint, story_points, url present in NEW's `get`
 # but absent from old's - is additive, not a compat break: nothing that
 # read old's `get` output could have depended on their absence.
+# $d below is a jq variable, not a shell one, so the single quotes are what
+# keeps the shell out of it - exactly the opposite of what SC2016 assumes.
+# shellcheck disable=SC2016
 compare_json "get -f json" \
 	'del(.created, .flagged, .parent) | .project |= {key} | (.description // "") as $d | .description = $d' \
 	'del(.sprint, .story_points, .url) | .project |= {key} | (.description // "") as $d | .description = $d' || true

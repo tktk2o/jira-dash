@@ -1,0 +1,71 @@
+name: CI
+
+# push と PR の両方で走らせる。この repo は単独メンテで main に直接コミットするので、
+# PR だけに付けると実質何も走らない。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同じ ref で走っている古いジョブは打ち切る。private repo の Actions 分数は有限で、
+# 追い越された結果に払う理由がない。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod の go ディレクティブを唯一の真実にする。ここにバージョンを
+          # 書くと go.mod を上げた時に片方だけ古いまま気付かない。
+          go-version-file: go.mod
+          cache: true
+
+      # gofmt は「差分が出たら失敗」で見る。`gofmt -l` は整形されていない
+      # ファイル名を並べるだけで終了コードは 0 なので、出力の有無で落とす。
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # テストは認証情報を要らない前提で書かれている（API は httptest で立てる）。
+      # HOME を空にして走らせるのはその前提を守るためで、うっかり
+      # ~/.config/jira-dash の実物を読むテストが混ざったらここで落ちる。
+      - name: go test
+        run: go test ./...
+        env:
+          HOME: ${{ runner.temp }}
+
+      # -race は普段の go test とは別物として走らせる。この TUI は bubbletea の
+      # 単一ループで状態を持つが、tea.Cmd は各々別 goroutine で動くので、
+      # Model をまたいで共有した何かは競合になり得る。
+      - name: go test -race
+        run: go test -race ./...
+        env:
+          HOME: ${{ runner.temp }}
+
+      # 起動時リビルドのランチャ（docs/adr/0012）。bash 3.2 の macOS でも
+      # 動く必要があるが、構文チェックと shellcheck は OS に依らない。
+      - name: shell scripts
+        run: |
+          # ubuntu-latest の image には入っている想定だが、image の中身は
+          # 予告なく変わるので、無ければ入れる形にしておく。
+          command -v shellcheck >/dev/null || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          }
+          for f in scripts/jd scripts/jhd-claude-split scripts/verify-against-old-cli; do
+            bash -n "$f"
+            shellcheck "$f"
+          done
