@@ -820,15 +820,23 @@ func TestPickedValueIsShellQuoted(t *testing.T) {
 	}
 }
 
+// Movement is the arrow keys, not j/k: see handleChooseKey's comment for why
+// - a letter has to always mean "narrow the filter" once the box can be
+// typed into, and j/k are the motion keys most likely to also be the first
+// letter of something you want to type.
 func TestPickerMovesAndRunsAndCancels(t *testing.T) {
 	m := press(chooseTestModel(t), "A")
 
-	m = press(m, "j")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
 	if m.chooseCursor != 1 {
 		t.Fatalf("cursor = %d, want 1", m.chooseCursor)
 	}
 	// The cursor stops at the ends rather than wrapping, the way the table's does.
-	m = press(press(m, "j"), "j")
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
 	if m.chooseCursor != 1 {
 		t.Errorf("cursor ran past the last entry: %d", m.chooseCursor)
 	}
@@ -845,6 +853,149 @@ func TestPickerMovesAndRunsAndCancels(t *testing.T) {
 	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if next.(Model).choosing {
 		t.Error("esc should close the picker")
+	}
+}
+
+// Characters do not need to be adjacent, order matters, and case is ignored -
+// the same contract an fzf-style filter promises everywhere else.
+func TestFuzzyMatchAcceptsInOrderNonAdjacentCaseInsensitiveChars(t *testing.T) {
+	for _, tc := range []struct {
+		name, label, query string
+		want               bool
+	}{
+		{"scattered chars in order match", "Kato Takuto", "ka", true},
+		{"scattered chars in order match, second candidate", "Kenji Asano", "ka", true},
+		{"different case still matches", "Kato Takuto", "KA", true},
+		{"a char absent from the label does not match", "Kato Takuto", "kz", false},
+		{"chars present but out of order do not match", "Ab", "ba", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := fuzzyMatch(tc.label, tc.query)
+			if ok != tc.want {
+				t.Errorf("fuzzyMatch(%q, %q) ok = %v, want %v", tc.label, tc.query, ok, tc.want)
+			}
+		})
+	}
+}
+
+// The rank is the index of the last matched character, so a query that both
+// starts earlier and stays tighter in one label than another has to come out
+// lower - this is the concrete case where that ordering is visible, not just
+// asserted on the function directly.
+func TestFuzzyRankSortsEarlierTighterMatchesFirst(t *testing.T) {
+	// "ab": "Abacus" matches at 0,1 (rank 1); "Cab" matches at 1,2 (rank 2).
+	// Abacus starts earlier and is at least as tight, so it must rank first.
+	rankAbacus, ok := fuzzyMatch("Abacus", "ab")
+	if !ok {
+		t.Fatal("Abacus should match \"ab\"")
+	}
+	rankCab, ok := fuzzyMatch("Cab", "ab")
+	if !ok {
+		t.Fatal("Cab should match \"ab\"")
+	}
+	if !(rankAbacus < rankCab) {
+		t.Errorf("rank(Abacus)=%d should be less than rank(Cab)=%d", rankAbacus, rankCab)
+	}
+
+	m := chooseTestModel(t)
+	m.chooseList = []Choice{{Value: "Cab"}, {Value: "Abacus"}}
+	m.chooseFilter = "ab"
+
+	got := m.visibleChoices()
+	if len(got) != 2 || got[0].Value != "Abacus" || got[1].Value != "Cab" {
+		t.Errorf("visibleChoices = %+v, want Abacus ranked above Cab", got)
+	}
+}
+
+// Typing narrows the list under a cursor that has already moved down it, and
+// the risk this guards is a crash, not just a wrong answer: enter used to
+// index chooseList directly, so a cursor left at 2 with only 1 match
+// remaining would have been an index out of range.
+func TestChoosePickerFilterClampsTheCursorAndEnterSelectsThePostClampEntry(t *testing.T) {
+	m := chooseTestModel(t)
+	m.cfg.Keybindings.Issues = append(m.cfg.Keybindings.Issues, Keybinding{
+		Key: "z", Name: "zone", Command: "true",
+		Choices: []Choice{{Value: "Alice"}, {Value: "Bob"}, {Value: "Carl"}},
+	})
+	m = press(m, "z")
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	if m.chooseCursor != 2 {
+		t.Fatalf("cursor = %d, want 2 (on Carl)", m.chooseCursor)
+	}
+
+	// Narrows to just "Bob": the cursor at 2 no longer has an entry.
+	m = press(m, "b")
+	if got := len(m.visibleChoices()); got != 1 {
+		t.Fatalf("expected exactly Bob to match, got %d entries", got)
+	}
+	if m.chooseCursor != 0 {
+		t.Errorf("cursor = %d, want clamped to 0", m.chooseCursor)
+	}
+
+	// The value enter would have sent, read off the post-clamp entry rather
+	// than assumed: this is the assertion that would have caught the bug, since
+	// indexing chooseList with the unclamped cursor sent the wrong value (or
+	// panicked) instead of Bob's.
+	selected := m.visibleChoices()[m.chooseCursor]
+	if selected.Value != "Bob" {
+		t.Fatalf("the post-clamp entry is %q, want Bob", selected.Value)
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if next.(Model).choosing {
+		t.Error("enter should close the picker")
+	}
+	if cmd == nil {
+		t.Error("enter should run the command")
+	}
+}
+
+// Clearing the filter has to bring back every original entry in its original
+// order, not just the ones that happened to be on screen while it was narrowed.
+func TestEmptyChoosePickerFilterRestoresTheFullOriginalOrder(t *testing.T) {
+	m := chooseTestModel(t)
+	original := []Choice{{Value: "Carl"}, {Value: "Alice"}, {Value: "Bob"}}
+	m.chooseList = original
+
+	m.chooseFilter = "ali"
+	if got := m.visibleChoices(); len(got) != 1 || got[0].Value != "Alice" {
+		t.Fatalf("filtered = %+v, want only Alice", got)
+	}
+
+	m.chooseFilter = ""
+	got := m.visibleChoices()
+	if !reflect.DeepEqual(got, original) {
+		t.Errorf("visibleChoices() with no filter = %+v, want the original order %+v", got, original)
+	}
+}
+
+// The one real design decision this feature required: whether j/k move the
+// cursor or land in the filter buffer while the picker is open. They land in
+// the buffer - see handleChooseKey's comment for why - and this is the test
+// that would fail if that regressed back to moving the cursor.
+func TestTypingJIntoThePickerFilterFiltersRatherThanMovingTheCursor(t *testing.T) {
+	m := chooseTestModel(t)
+	m.cfg.Keybindings.Issues = append(m.cfg.Keybindings.Issues, Keybinding{
+		Key: "z", Name: "zone", Command: "true",
+		Choices: []Choice{{Value: "Alice"}, {Value: "Jane"}, {Value: "Bob"}},
+	})
+	m = press(m, "z")
+
+	m = press(m, "j")
+
+	if m.chooseCursor != 0 {
+		t.Errorf("cursor = %d, want 0 - j must not move it while filtering", m.chooseCursor)
+	}
+	if m.chooseFilter != "j" {
+		t.Errorf("chooseFilter = %q, want %q", m.chooseFilter, "j")
+	}
+	got := m.visibleChoices()
+	if len(got) != 1 || got[0].Value != "Jane" {
+		t.Errorf("visibleChoices = %+v, want only Jane", got)
 	}
 }
 

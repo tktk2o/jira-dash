@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -152,6 +153,13 @@ type Model struct {
 	chooseKey    string
 	chooseList   []Choice
 	chooseCursor int
+
+	// chooseFilter is what has been typed into the picker box. It narrows
+	// chooseList the way the table's own filter narrows a section - see
+	// visibleChoices - but there is no draft/commit split like filterDraft's:
+	// a picker is already a modal box with nothing else competing for the
+	// keys, so there is no reason to make typing provisional.
+	chooseFilter string
 
 	// loadingChoices and chooseSeq back choicesFrom: transitions/assignees, the
 	// two sources that need an API call before the box has anything to show.
@@ -373,6 +381,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chooseKey = msg.kbKey
 		m.chooseList = msg.list
 		m.chooseCursor = 0
+		m.chooseFilter = ""
 		return m, nil
 
 	case debounceMsg:
@@ -650,7 +659,73 @@ func (m Model) openChoosePrompt(kb Keybinding) (tea.Model, tea.Cmd) {
 	m.chooseKey = kb.Key
 	m.chooseList = list
 	m.chooseCursor = 0
+	m.chooseFilter = ""
 	return m, nil
+}
+
+// visibleChoices is chooseList narrowed and ranked by chooseFilter - the
+// picker's equivalent of sectionState.visible(). Empty input returns the full
+// list in its original order, same as the table's own filter.
+func (m Model) visibleChoices() []Choice {
+	if m.chooseFilter == "" {
+		return m.chooseList
+	}
+	type ranked struct {
+		choice Choice
+		rank   int
+	}
+	matches := make([]ranked, 0, len(m.chooseList))
+	for _, c := range m.chooseList {
+		if rank, ok := fuzzyMatch(c.Name(), m.chooseFilter); ok {
+			matches = append(matches, ranked{c, rank})
+		}
+	}
+	// Stable so choices that tie on rank keep chooseList's own order, the same
+	// guarantee an untyped filter gives - without it every keystroke could
+	// reshuffle entries that are equally good matches, which reads as the list
+	// jittering rather than narrowing.
+	sort.SliceStable(matches, func(i, j int) bool { return matches[i].rank < matches[j].rank })
+	out := make([]Choice, len(matches))
+	for i, r := range matches {
+		out[i] = r.choice
+	}
+	return out
+}
+
+// fuzzyMatch reports whether every rune of query appears in label in order
+// (not necessarily adjacent), case-insensitive, and if so a rank where lower
+// sorts first.
+//
+// The rank is simply the index, within label, of the LAST matched character -
+// found by the greedy leftmost match (each query rune claims the earliest
+// unclaimed occurrence in label). Minimising that one number rewards both of
+// the properties the task asked for at once: ending the match early requires
+// starting early, and it requires the matched runes to be packed tightly
+// rather than scattered - a match spread across the whole label necessarily
+// ends late. A separate "earliness" term added to a separate "tightness" term
+// would double-count exactly this overlap, so one number is not just simpler,
+// it is the more honest score. Ties (equal end index) fall back to
+// chooseList's order via the stable sort in visibleChoices.
+func fuzzyMatch(label, query string) (rank int, ok bool) {
+	if query == "" {
+		return 0, true
+	}
+	l := []rune(strings.ToLower(label))
+	q := []rune(strings.ToLower(query))
+	qi, end := 0, -1
+	for i, r := range l {
+		if r == q[qi] {
+			end = i
+			qi++
+			if qi == len(q) {
+				break
+			}
+		}
+	}
+	if qi != len(q) {
+		return 0, false
+	}
+	return end, true
 }
 
 // fetchChoices calls the API behind choicesFrom: transitions/assignees. seq and
@@ -703,23 +778,62 @@ func (m Model) sectionStatuses() []Choice {
 	return out
 }
 
+// handleChooseKey routes keys inside the picker. Movement is on the arrow
+// keys only, deliberately not j/k: unlike the table's `/` filter, the picker
+// has no separate mode to enter before typing takes over, so if a letter
+// could mean either "move" or "narrow" a label like "Jane" would send the
+// cursor flying every time its first character matched a motion key. gh-dash
+// resolves the same clash the same way for its own filter-while-typing input -
+// letters always fall through to the buffer, and the arrow keys keep
+// movement reachable without reintroducing the ambiguity.
 func (m Model) handleChooseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "j", "down":
-		m.chooseCursor = min(m.chooseCursor+1, len(m.chooseList)-1)
+	switch msg.Type {
+	case tea.KeyDown:
+		m.chooseCursor = min(m.chooseCursor+1, len(m.visibleChoices())-1)
 		return m, nil
-	case "k", "up":
+	case tea.KeyUp:
 		m.chooseCursor = max(m.chooseCursor-1, 0)
 		return m, nil
-	case "enter":
-		key, value := m.chooseKey, m.chooseList[m.chooseCursor].Value
+	case tea.KeyEnter:
+		list := m.visibleChoices()
+		if len(list) == 0 || m.chooseCursor < 0 || m.chooseCursor >= len(list) {
+			return m, nil
+		}
+		key, value := m.chooseKey, list[m.chooseCursor].Value
 		m.closeChoosePrompt()
 		return m.runUserKeybindingWithChoice(key, value)
-	case "esc", "ctrl+c":
+	case tea.KeyEsc, tea.KeyCtrlC:
 		m.closeChoosePrompt()
+		return m, nil
+	case tea.KeyBackspace:
+		if m.chooseFilter != "" {
+			r := []rune(m.chooseFilter)
+			m.chooseFilter = string(r[:len(r)-1])
+		}
+		m.clampChooseCursor()
+		return m, nil
+	// Space arrives as its own key type, not as a rune - the same reason
+	// handleFilterKey has this case for the table's filter.
+	case tea.KeySpace:
+		m.chooseFilter += " "
+		m.clampChooseCursor()
+		return m, nil
+	case tea.KeyRunes:
+		m.chooseFilter += string(msg.Runes)
+		m.clampChooseCursor()
 		return m, nil
 	}
 	return m, nil
+}
+
+// clampChooseCursor keeps the cursor inside the narrowed list every time
+// chooseFilter changes. Without this, filtering a list down while the cursor
+// sat near its old end left it pointing past the new, shorter slice - an
+// index that enter would then use to index into it.
+func (m *Model) clampChooseCursor() {
+	if n := len(m.visibleChoices()); m.chooseCursor >= n {
+		m.chooseCursor = max(0, n-1)
+	}
 }
 
 func (m *Model) closeChoosePrompt() {
@@ -727,6 +841,7 @@ func (m *Model) closeChoosePrompt() {
 	m.chooseKey = ""
 	m.chooseList = nil
 	m.chooseCursor = 0
+	m.chooseFilter = ""
 }
 
 // AskPrompt assembles what the configured command receives as {{.Prompt}}: the

@@ -648,6 +648,12 @@ func TestViewNeverDrawsMoreLinesThanTheTerminalHas(t *testing.T) {
 		{"ask box and help", []string{"?", "a"}},
 		{"picker", []string{"s"}},
 		{"picker and help", []string{"?", "s"}},
+		// Narrows 12 entries down to 3 ("status 1", "status 10", "status 11"):
+		// the box's height has to track the narrowed count, not the cap the
+		// unfiltered "picker" case above already covers - a filter that left 6
+		// blank rows under 3 matches would pass the >m.height check here for
+		// the wrong reason.
+		{"picker filtered", []string{"s", "1"}},
 		{"filter", []string{"/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

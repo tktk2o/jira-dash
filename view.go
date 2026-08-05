@@ -593,13 +593,24 @@ func choosePromptTitle(m Model) string {
 	return fmt.Sprintf("%s on %s…", label, key)
 }
 
-// renderChoices is the picker's body: the list, windowed the same way the table
-// is, with the entry under the cursor filled to the pane's edge so it reads as
-// the selected row it is.
+// renderChoices is the picker's body: the typed filter and its match count on
+// its own line, then the narrowed, ranked list windowed the same way the
+// table is, with the entry under the cursor filled to the pane's edge so it
+// reads as the selected row it is.
+//
+// The count is folded into this line rather than added as a second readout
+// because renderPromptBox only has a title and a keys line free, and the
+// title already carries the issue key - putting the count there too would
+// make one line say two unrelated things.
 func renderChoices(m Model, width int) string {
 	st := newStyles(m.cfg.Theme)
-	lines := make([]string, 0, len(m.chooseList))
-	for i, c := range m.chooseList {
+	matches := m.visibleChoices()
+
+	filterLine := st.footer.Render(runewidth.FillRight(
+		Truncate(fmt.Sprintf("%s (%d/%d)", m.chooseFilter, len(matches), len(m.chooseList)), width), width))
+
+	lines := make([]string, 0, len(matches))
+	for i, c := range matches {
 		style := st.row
 		if i == m.chooseCursor {
 			style = st.selectedRow
@@ -607,7 +618,15 @@ func renderChoices(m Model, width int) string {
 		lines = append(lines,
 			style.Render(runewidth.FillRight("  "+Truncate(c.Name(), max(0, width-2)), width)))
 	}
-	return strings.Join(windowRows(lines, m.chooseCursor, chooseHeight(len(m.chooseList))), "\n")
+	if len(lines) == 0 {
+		// Distinct from an empty chooseList (refused before the box ever opens,
+		// see openChoosePrompt): this is a live typed filter that has ruled out
+		// every candidate, and the box should say so rather than draw nothing.
+		lines = append(lines, st.footer.Render(runewidth.FillRight("  (no matches)", width)))
+	}
+	body := append([]string{filterLine},
+		windowRows(lines, m.chooseCursor, chooseHeight(len(matches)))...)
+	return strings.Join(body, "\n")
 }
 
 // chooseHeight is how many entries the box shows. Capped so that a long list
@@ -674,7 +693,7 @@ func (m Model) View() string {
 			// them, and 2 more for the padding lipgloss adds inside the width it was
 			// given: a line as wide as the box wraps, and each entry became two.
 			renderChoices(m, max(0, tableWidth-6)),
-			"enter select ⋅ j/k move ⋅ esc cancel", tableWidth)
+			"type to filter ⋅ ↑/↓ move ⋅ enter select ⋅ esc cancel", tableWidth)
 		prompting = false
 	case m.filtering:
 		promptLine = "/" + m.filterDraft
@@ -735,7 +754,8 @@ func (m Model) promptLines() int {
 	case m.asking:
 		return promptBoxChrome + askInputHeight
 	case m.choosing:
-		return promptBoxChrome + chooseHeight(len(m.chooseList))
+		// +1 for the filter/count line renderChoices draws above the list.
+		return promptBoxChrome + 1 + chooseHeight(len(m.visibleChoices()))
 	case m.filtering, m.sections[m.active].filter != "":
 		// The filter stays one line. It is a phrase, not a message, and a box
 		// around it would take eight lines of the list to hold six characters.
