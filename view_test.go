@@ -170,6 +170,90 @@ func TestCommandRanMsgReportsFailureOnly(t *testing.T) {
 	}
 }
 
+// ExecProcess used to own the terminal for every configured command, so a
+// failure repainted the whole dashboard over whatever the command had printed
+// and the footer could only ever say "exit status 1". The footer must carry
+// the command's own stderr instead, once it has one.
+func TestCommandRanMsgReportsStderrOverTheBareExitStatus(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+
+	next, _ := m.Update(commandRanMsg{key: "a", err: errTest, stderr: "real-error-message"})
+	m = next.(Model)
+	if !strings.Contains(m.status, "real-error-message") {
+		t.Errorf("status = %q, want the command's own stderr", m.status)
+	}
+	if strings.Contains(m.status, "kaboom") {
+		t.Errorf("status = %q, want the stderr snippet, not the exit status, once one is available", m.status)
+	}
+}
+
+// A CLI commonly prints a warning before its actual error, so the first line of
+// stderr is the least likely one to say what went wrong - lastMeaningfulLine
+// has to walk from the end.
+func TestLastMeaningfulLinePicksTheLastNonEmptyLine(t *testing.T) {
+	got := lastMeaningfulLine("warning-line-1\nreal-error-message\n")
+	if got != "real-error-message" {
+		t.Errorf("lastMeaningfulLine = %q, want the last non-empty line", got)
+	}
+}
+
+// A long stderr line would otherwise push the age, the issue count and the
+// help hint off the one-line footer.
+func TestLastMeaningfulLineTrimsToFitOneFooterLine(t *testing.T) {
+	got := lastMeaningfulLine(strings.Repeat("x", stderrSnippetMaxLen*2))
+	if runewidth.StringWidth(got) > stderrSnippetMaxLen {
+		t.Errorf("lastMeaningfulLine returned %d cells, want at most %d", runewidth.StringWidth(got), stderrSnippetMaxLen)
+	}
+}
+
+// terminal: true is the only setting that may hand the terminal to a command:
+// only then can tea.ExecProcess be the right call, since it tears the
+// dashboard down and repaints it on exit. This is asserted on the message type
+// the returned tea.Cmd produces rather than by actually running a command
+// against a real TTY - calling the tea.Cmd from tea.ExecProcess only wraps the
+// *exec.Cmd in bubbletea's own internal message; it does not execute it.
+func TestTerminalKeybindingTakesTheExecProcessPathAndOthersDoNot(t *testing.T) {
+	terminalCmd := commandCmd(Keybinding{Key: "e", Terminal: true}, "true", ".")
+	msg := terminalCmd()
+	if _, ok := msg.(commandRanMsg); ok {
+		t.Errorf("terminal: true produced a commandRanMsg directly, want bubbletea's own exec message")
+	}
+
+	plainCmd := commandCmd(Keybinding{Key: "o"}, "true", ".")
+	msg = plainCmd()
+	if _, ok := msg.(commandRanMsg); !ok {
+		t.Errorf("terminal unset produced %T, want commandRanMsg directly - no ExecProcess hand-off", msg)
+	}
+}
+
+// A configured command's stderr must reach the footer even though it never
+// touches the terminal - this is the whole point of not going through
+// ExecProcess for the common case.
+func TestNonTerminalCommandCapturesStderrOnFailure(t *testing.T) {
+	cmd := commandCmd(Keybinding{Key: "x"}, "echo warning-line-1 >&2; echo real-error-message >&2; exit 1", ".")
+	msg := cmd().(commandRanMsg)
+	if msg.err == nil {
+		t.Fatal("want an error from a command that exits 1")
+	}
+	if msg.stderr != "real-error-message" {
+		t.Errorf("stderr = %q, want the last non-empty line", msg.stderr)
+	}
+}
+
+// The success path must still clear the footer and still let refresh: true
+// trigger a refetch - runConfigured and Update's commandRanMsg handling must
+// keep agreeing on that regardless of which path produced the message.
+func TestNonTerminalCommandSucceedsAndReportsNoError(t *testing.T) {
+	cmd := commandCmd(Keybinding{Key: "x", Refresh: true}, "true", ".")
+	msg := cmd().(commandRanMsg)
+	if msg.err != nil {
+		t.Errorf("err = %v, want nil for a command that exits 0", msg.err)
+	}
+	if !msg.refresh {
+		t.Error("refresh should be carried through from the keybinding")
+	}
+}
+
 func TestCopiedMsgReportsOnTheFooter(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 

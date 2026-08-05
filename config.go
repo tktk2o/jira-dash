@@ -112,6 +112,15 @@ type Keybinding struct {
 	// tell a command that writes from one that opens a browser, and a needless
 	// reload costs two real Jira REST round trips (0.5-1.2s each).
 	Refresh bool `yaml:"refresh"`
+	// Terminal marks a command that needs the TTY: an interactive editor, a
+	// pager, anything that draws its own full-screen UI. Only such a command goes
+	// through tea.ExecProcess, which hands the terminal over and repaints the
+	// whole dashboard when it exits - visible as a flicker on every keypress that
+	// runs a command, even one that never touches the terminal. The default is
+	// off because the common case (spawning a tmux pane, opening a browser,
+	// posting via a CLI) does not need the TTY, and without it the command's
+	// stderr is captured and reported instead of discarded under the redraw.
+	Terminal bool `yaml:"terminal"`
 }
 
 // Choice is one line of a picker. Label is what the box shows and Value is what

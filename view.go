@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -58,6 +60,11 @@ const (
 	// one from eating the table: past it the list scrolls, the same way the table
 	// does.
 	chooseMaxHeight = 8
+	// stderrSnippetMaxLen bounds how much of a failed command's stderr the
+	// footer carries. The footer is one line, and a stack trace would otherwise
+	// push the rest of it - the age, the issue count, the help hint - off the
+	// terminal.
+	stderrSnippetMaxLen = 200
 )
 
 // Two colours gh-dash uses that the theme config has no name for: the blue it
@@ -797,6 +804,12 @@ type commandRanMsg struct {
 	// refresh is the keybinding's own refresh: flag, carried on the message so the
 	// handler does not have to find the keybinding again to know what to do next.
 	refresh bool
+	// stderr is the failed command's own last non-empty line of stderr, set only
+	// when err is set. A CLI's actual error message is usually printed after any
+	// warnings, so the last line rather than the first is what is worth showing -
+	// without this the footer only ever said "exit status 1", which names that
+	// something failed and nothing about why.
+	stderr string
 }
 
 // copySelected puts a field of the selected issue on the clipboard via pbcopy.
@@ -874,15 +887,62 @@ func (m Model) runConfigured(key string, fill func(Issue, IssueVars) IssueVars) 
 			m.status = err.Error()
 			return m, nil
 		}
+		return m, commandCmd(kb, rendered, dir)
+	}
+	return m, nil
+}
+
+// commandCmd runs one configured keybinding's rendered command. terminal: true
+// is the only path that goes through tea.ExecProcess: it hands the terminal
+// over and repaints the whole dashboard once the command exits, which is the
+// right (and only) way to give an interactive editor or pager the TTY it draws
+// itself with. Every other command - the common case: a tmux pane, a browser, a
+// posting CLI - never needed the terminal, so giving it up by default is both
+// what stops the flicker on every keypress and what makes the command's own
+// stderr reachable instead of disappearing under ExecProcess's redraw.
+func commandCmd(kb Keybinding, rendered, dir string) tea.Cmd {
+	// The command's own cwd as well as {{.Dir}}, so a command that does not spawn
+	// anything - `git log`, an editor - lands in the right checkout without the
+	// config having to cd. LoadConfig has already checked the path exists, so
+	// this cannot fail the command with a directory error.
+	if kb.Terminal {
 		cmd := exec.Command("sh", "-c", rendered)
-		// The command's own cwd as well as {{.Dir}}, so a command that does not
-		// spawn anything - `git log`, an editor - lands in the right checkout
-		// without the config having to cd. LoadConfig has already checked the path
-		// exists, so this cannot fail the command with a directory error.
 		cmd.Dir = dir
-		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return commandRanMsg{key: kb.Key, err: err, refresh: kb.Refresh}
 		})
 	}
-	return m, nil
+	return func() tea.Msg {
+		// Bounded by fetchTimeout, the same convention fetchSection and the other
+		// API calls use: this runs on its own goroutine so the event loop keeps
+		// turning, but a hung command must not leave the key looking dead forever.
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "sh", "-c", rendered)
+		cmd.Dir = dir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		msg := commandRanMsg{key: kb.Key, refresh: kb.Refresh}
+		if err := cmd.Run(); err != nil {
+			msg.err = err
+			msg.stderr = lastMeaningfulLine(stderr.String())
+		}
+		return msg
+	}
+}
+
+// lastMeaningfulLine picks the line a failed command's stderr is worth showing
+// in a one-line footer. The last non-empty line rather than the first: a CLI
+// commonly prints warnings before its actual error, so the first line is the
+// least likely one to say what went wrong.
+func lastMeaningfulLine(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return Truncate(line, stderrSnippetMaxLen)
+		}
+	}
+	return ""
 }

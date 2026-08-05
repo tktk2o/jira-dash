@@ -392,7 +392,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case commandRanMsg:
 		if msg.err != nil {
-			m.status = msg.key + ": " + msg.err.Error()
+			// The command's own last line of stderr, not just the exit status: an
+			// ExecProcess failure used to redraw straight over whatever the command
+			// printed, so the footer could only ever say "exit status 1" and never why.
+			detail := msg.err.Error()
+			if msg.stderr != "" {
+				detail = msg.stderr
+			}
+			m.status = msg.key + ": " + detail
 			return m, nil
 		}
 		m.status = ""

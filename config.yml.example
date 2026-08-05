@@ -83,6 +83,19 @@ defaults:
 # title is free text and this command is run through `sh -c`. Do NOT add your
 # own quotes around a variable — `-n {{.IssueKey}}` is right, `-n "{{.IssueKey}}"`
 # would put literal quote marks in the window name.
+#
+# terminal: true hands the command the actual terminal (tea.ExecProcess),
+# tearing the dashboard down and repainting it once the command exits. Leave it
+# unset (the default) for the common case - spawning a tmux pane, opening a
+# browser, posting via a CLI - none of which touch the terminal, and the
+# command's own stderr is then captured and shown on failure instead of being
+# lost under the redraw. Only set it for a command that draws its own
+# full-screen UI and needs the TTY to do it, e.g.:
+#
+#   - key: e
+#     name: edit locally
+#     terminal: true
+#     command: nvim {{.Dir}}
 keybindings:
   issues:
     #: 課題をブラウザで開く
