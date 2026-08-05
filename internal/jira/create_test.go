@@ -136,6 +136,27 @@ func TestActiveSprintPrefersActiveOverFuture(t *testing.T) {
 	}
 }
 
+func TestActiveSprintAcceptsANumericSprintID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/board"):
+			_, _ = w.Write([]byte(`{"values":[{"id":1}]}`))
+		case strings.HasSuffix(r.URL.Path, "/sprint"):
+			_, _ = w.Write([]byte(`{"values":[{"id":42,"name":"Unrelated name","state":"active"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	got, err := newTestClient(t, srv.URL).ActiveSprint(context.Background(), "PROJ", "42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != 42 {
+		t.Fatalf("sprint ID = %d, want 42", got.ID)
+	}
+}
+
 // A closed sprint sharing the prefix must never win, even with no active
 // sprint present - CurrentSprint treats "closed" the same way, and picking
 // one here would pin new issues to an iteration that already ended.

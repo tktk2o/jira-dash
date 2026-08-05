@@ -254,6 +254,30 @@ func TestNonTerminalCommandSucceedsAndReportsNoError(t *testing.T) {
 	}
 }
 
+func TestRefreshAfterCommandTargetsTheSectionWhereItStarted(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.active = 1
+	next, cmd := m.Update(commandRanMsg{key: "x", refresh: true, section: 0})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("expected a section refresh")
+	}
+	msgs := cmd()
+	batch, ok := msgs.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("got %T, want tea.BatchMsg", msgs)
+	}
+	var fetched fetchedMsg
+	for _, c := range batch {
+		if msg, ok := c().(fetchedMsg); ok {
+			fetched = msg
+		}
+	}
+	if fetched.idx != 0 {
+		t.Fatalf("refreshed section %d, want the originating section 0", fetched.idx)
+	}
+}
+
 func TestCopiedMsgReportsOnTheFooter(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 

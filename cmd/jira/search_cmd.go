@@ -105,6 +105,12 @@ func runSearch(ctx context.Context, client jiraClient, args []string, stdout io.
 	if err != nil {
 		return err
 	}
+	if limit < 1 {
+		return fmt.Errorf("search --limit must be positive")
+	}
+	if len(positionals) > 1 {
+		return fmt.Errorf("search accepts at most one query argument")
+	}
 
 	resolvedJQL := jql
 	if resolvedJQL == "" {

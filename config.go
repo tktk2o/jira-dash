@@ -205,6 +205,9 @@ func LoadConfig(path string) (*Config, error) {
 	if c.Defaults.Limit == 0 {
 		c.Defaults.Limit = defaultLimit
 	}
+	if c.Defaults.Limit < 1 {
+		return nil, fmt.Errorf("%s: defaults.limit must be positive", path)
+	}
 	if c.Defaults.Preview.Open == nil {
 		open := true
 		c.Defaults.Preview.Open = &open
@@ -212,8 +215,14 @@ func LoadConfig(path string) (*Config, error) {
 	if c.Defaults.Preview.Position == "" {
 		c.Defaults.Preview.Position = defaultPreviewPosition
 	}
+	if c.Defaults.Preview.Position != defaultPreviewPosition {
+		return nil, fmt.Errorf("%s: defaults.preview.position must be %q", path, defaultPreviewPosition)
+	}
 	if c.Defaults.Preview.Width == 0 {
 		c.Defaults.Preview.Width = defaultPreviewWidth
+	}
+	if c.Defaults.Preview.Width <= 0 || c.Defaults.Preview.Width >= 1 {
+		return nil, fmt.Errorf("%s: defaults.preview.width must be greater than 0 and less than 1", path)
 	}
 
 	home, _ := os.UserHomeDir()
@@ -227,6 +236,9 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		if s.Limit == 0 {
 			c.Sections[i].Limit = c.Defaults.Limit
+		}
+		if c.Sections[i].Limit < 1 {
+			return nil, fmt.Errorf("%s: section %q limit must be positive", path, s.Title)
 		}
 
 		dir := expandHome(orDefault(s.Dir, c.Defaults.Dir), home)

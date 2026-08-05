@@ -77,3 +77,13 @@ func TestSearchWithNoFiltersAndNoJQLIsAnError(t *testing.T) {
 		t.Errorf("client was called with no query at all: %v", fc.calls)
 	}
 }
+
+func TestSearchRejectsInvalidLimitAndExtraQueries(t *testing.T) {
+	fc := &fakeClient{}
+	if err := runSearch(context.Background(), fc, []string{"query", "--limit", "-1"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("negative limit should be rejected")
+	}
+	if err := runSearch(context.Background(), fc, []string{"one", "two"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("extra query arguments should be rejected")
+	}
+}

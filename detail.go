@@ -24,9 +24,15 @@ const detailDebounce = 150 * time.Millisecond
 func (m *Model) selectionChanged() tea.Cmd {
 	issue, ok := m.sections[m.active].selected()
 	if !ok {
+		if (m.detailBodyErr != "" && m.status == m.detailBodyErr) ||
+			(m.detailCommentsErr != "" && m.status == m.detailCommentsErr) {
+			m.status = ""
+		}
 		m.detailKey = ""
 		m.detailBody = ""
 		m.detailBodyDone = false
+		m.detailBodyErr = ""
+		m.detailCommentsErr = ""
 		m.detailComments = nil
 		m.detail.SetContent("")
 		return nil
@@ -34,10 +40,16 @@ func (m *Model) selectionChanged() tea.Cmd {
 
 	m.detailSeq++
 	m.detailKey = issue.Key
+	if (m.detailBodyErr != "" && m.status == m.detailBodyErr) ||
+		(m.detailCommentsErr != "" && m.status == m.detailCommentsErr) {
+		m.status = ""
+	}
 	// The body and comments belong to the row we just left; keeping them would
 	// put another issue's text under this issue's header.
 	m.detailBody = ""
 	m.detailBodyDone = false
+	m.detailBodyErr = ""
+	m.detailCommentsErr = ""
 	m.detailComments = nil
 	// The header needs no call, so the pane is never blank while the two
 	// fetches are in flight.
@@ -66,6 +78,8 @@ func (m *Model) refreshDetail(reset bool) {
 	switch {
 	case !m.detailBodyDone:
 		parts = append(parts, ps.meta.Render("loading..."))
+	case m.detailBodyErr != "":
+		parts = append(parts, ps.meta.Render("description unavailable: "+m.detailBodyErr))
 	case m.detailBody == "":
 		// Phrased like renderComments' "no comments": a description-less issue
 		// is a fact about the issue, not a failure of this pane.

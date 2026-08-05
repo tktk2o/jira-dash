@@ -60,6 +60,24 @@ defaults:
 	}
 }
 
+func TestLoadConfigRejectsInvalidNumericAndEnumSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name, extra string
+	}{
+		{"negative section limit", "    limit: -1\n"},
+		{"negative default limit", "defaults:\n  limit: -1\n"},
+		{"preview width outside ratio", "defaults:\n  preview:\n    width: 1.2\n"},
+		{"unsupported preview position", "defaults:\n  preview:\n    position: left\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "jiraSections:\n  - title: Mine\n    jql: project = ABC\n" + tc.extra
+			if _, err := LoadConfig(writeConfig(t, body)); err == nil {
+				t.Fatal("expected invalid config to be rejected")
+			}
+		})
+	}
+}
+
 func TestLoadConfigSectionLimitOverridesDefault(t *testing.T) {
 	path := writeConfig(t, `
 jiraSections:

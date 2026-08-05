@@ -279,6 +279,21 @@ func TestPreviewStopsLoadingWhenTheBodyFetchFails(t *testing.T) {
 	if !strings.Contains(m.status, "boom") {
 		t.Errorf("status = %q, want the error", m.status)
 	}
+	if !strings.Contains(plain(m.detail.View()), "description unavailable") {
+		t.Errorf("preview should distinguish an error from an empty description:\n%s", plain(m.detail.View()))
+	}
+}
+
+func TestPreviewIgnoresABodyErrorForThePreviouslySelectedIssue(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: fixedNow()()})
+	m = settled(next.(Model))
+	m = press(m, "j")
+	next, _ = m.Update(issueLoadedMsg{key: "ABC-1", err: errors.New("stale boom")})
+	m = next.(Model)
+	if strings.Contains(m.status, "stale boom") {
+		t.Fatalf("stale issue error leaked into current status: %q", m.status)
+	}
 }
 
 // A reply for a row the cursor has already left must not overwrite the pane.

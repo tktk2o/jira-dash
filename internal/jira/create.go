@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +96,7 @@ type sprintsResponse struct {
 // `jira search` would already show it - the two must agree, or an issue
 // created here could look misfiled the moment it is searched for.
 func (c *Client) ActiveSprint(ctx context.Context, projectKey, prefix string) (Sprint, error) {
+	wantedID, byIDErr := strconv.Atoi(prefix)
 	q := url.Values{"projectKeyOrId": {projectKey}}
 	var boards boardsResponse
 	if err := c.doAgile(ctx, http.MethodGet, "/board?"+q.Encode(), nil, &boards); err != nil {
@@ -114,7 +116,9 @@ func (c *Client) ActiveSprint(ctx context.Context, projectKey, prefix string) (S
 			return Sprint{}, err
 		}
 		for _, s := range sprints.Values {
-			if prefix != "" && !strings.HasPrefix(s.Name, prefix) {
+			matches := prefix == "" || (byIDErr == nil && s.ID == wantedID) ||
+				(byIDErr != nil && strings.HasPrefix(s.Name, prefix))
+			if !matches {
 				continue
 			}
 			switch s.State {

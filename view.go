@@ -819,8 +819,9 @@ type copiedMsg struct {
 }
 
 type commandRanMsg struct {
-	key string
-	err error
+	key     string
+	err     error
+	section int
 	// refresh is the keybinding's own refresh: flag, carried on the message so the
 	// handler does not have to find the keybinding again to know what to do next.
 	refresh bool
@@ -907,7 +908,7 @@ func (m Model) runConfigured(key string, fill func(Issue, IssueVars) IssueVars) 
 			m.status = err.Error()
 			return m, nil
 		}
-		return m, commandCmd(kb, rendered, dir)
+		return m, commandCmd(kb, rendered, dir, m.active)
 	}
 	return m, nil
 }
@@ -920,7 +921,11 @@ func (m Model) runConfigured(key string, fill func(Issue, IssueVars) IssueVars) 
 // posting CLI - never needed the terminal, so giving it up by default is both
 // what stops the flicker on every keypress and what makes the command's own
 // stderr reachable instead of disappearing under ExecProcess's redraw.
-func commandCmd(kb Keybinding, rendered, dir string) tea.Cmd {
+func commandCmd(kb Keybinding, rendered, dir string, sections ...int) tea.Cmd {
+	section := -1
+	if len(sections) > 0 {
+		section = sections[0]
+	}
 	// The command's own cwd as well as {{.Dir}}, so a command that does not spawn
 	// anything - `git log`, an editor - lands in the right checkout without the
 	// config having to cd. LoadConfig has already checked the path exists, so
@@ -929,7 +934,7 @@ func commandCmd(kb Keybinding, rendered, dir string) tea.Cmd {
 		cmd := exec.Command("sh", "-c", rendered)
 		cmd.Dir = dir
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return commandRanMsg{key: kb.Key, err: err, refresh: kb.Refresh}
+			return commandRanMsg{key: kb.Key, err: err, refresh: kb.Refresh, section: section}
 		})
 	}
 	return func() tea.Msg {
@@ -944,7 +949,7 @@ func commandCmd(kb Keybinding, rendered, dir string) tea.Cmd {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 
-		msg := commandRanMsg{key: kb.Key, refresh: kb.Refresh}
+		msg := commandRanMsg{key: kb.Key, refresh: kb.Refresh, section: section}
 		if err := cmd.Run(); err != nil {
 			msg.err = err
 			msg.stderr = lastMeaningfulLine(stderr.String())

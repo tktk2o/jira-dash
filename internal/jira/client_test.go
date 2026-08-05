@@ -54,6 +54,13 @@ func TestClientSendsBasicAuthAndAcceptsJSON(t *testing.T) {
 	}
 }
 
+func TestNewClientHasABoundedHTTPTimeout(t *testing.T) {
+	c := NewClient(Credentials{})
+	if c.http.Timeout <= 0 {
+		t.Fatal("HTTP client must not allow an unbounded CLI request")
+	}
+}
+
 // 401 は「壊れた」ではなく「トークンが切れた」。区別できないと直し方が分からない。
 func TestClientTurnsAnUnauthorizedIntoAnActionableError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
