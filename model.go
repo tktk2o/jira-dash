@@ -328,6 +328,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = ""
+		if msg.refresh {
+			// The same debounced path a cursor move takes, so a comment posted from
+			// the box shows up in the pane without an r.
+			return m, m.selectionChanged()
+		}
 		return m, nil
 
 	case tea.KeyMsg:

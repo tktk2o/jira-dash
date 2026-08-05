@@ -89,9 +89,16 @@ type Keybinding struct {
 	// back to the command, which is honest but usually longer than the pane.
 	Name string `yaml:"name"`
 	// Prompt makes the key ask for an instruction before running, and puts the
-	// issue plus that instruction in {{.Prompt}}. Without it the key runs at
-	// once, which is the right shape for a fixed command like opening a browser.
+	// issue plus that instruction in {{.Prompt}}, or the typed text alone in
+	// {{.Input}}. Without it the key runs at once, which is the right shape for a
+	// fixed command like opening a browser.
 	Prompt bool `yaml:"prompt"`
+	// Refresh reloads the preview once the command exits without error, for a key
+	// that changed the issue - a posted comment is otherwise invisible until the
+	// cursor leaves the row and comes back. Opt-in because the dashboard cannot
+	// tell a command that writes from one that opens a browser, and a needless
+	// reload costs two ~360ms jira calls.
+	Refresh bool `yaml:"refresh"`
 }
 
 // Theme is the colours the dashboard draws in. Every field is optional: an

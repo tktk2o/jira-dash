@@ -106,6 +106,16 @@ keybindings:
         jhd-claude-split {{.Dir}}
         claude --permission-mode auto {{.Prompt}}
 
+    #: 課題にコメントを投稿する
+    - key: m
+      name: comment
+      prompt: true
+      # 投稿系は {{.Prompt}} ではなく {{.Input}} を使う。{{.Prompt}} は課題の
+      # タイトルと本文を含むので、それをそのまま Jira のコメントとして載せてしまう。
+      # refresh: 投稿したコメントを取り直してプレビューに出す。
+      refresh: true
+      command: jira comment add {{.IssueKey}} -b {{.Input}}
+
 theme:
   colors: # Dracula
     text:

@@ -25,6 +25,12 @@ type IssueVars struct {
 	// it on such a key gets an empty argument rather than a template error - the
 	// same shape as an issue with no assignee.
 	Prompt string
+	// Input is only what was typed, with none of the issue around it. Both exist
+	// because the two uses of the box want opposite things: handing an issue to
+	// Claude needs the issue included, while posting a comment must send the text
+	// alone - the issue is already the thing being commented on, and repeating it
+	// into the comment body would publish it to Jira.
+	Input string
 	// Dir is the active section's working directory. Commands that spawn something
 	// elsewhere need it as an argument rather than as an inherited cwd: `tmux
 	// new-window` takes the cwd from -c, not from the process that ran it.
@@ -32,9 +38,9 @@ type IssueVars struct {
 }
 
 // NewIssueVars is what a keybinding without prompt: true receives: the issue,
-// and an empty Prompt.
+// and an empty Prompt and Input.
 func NewIssueVars(i Issue) IssueVars {
-	return NewAskVars(i, "")
+	return NewAskVars(i, "", "")
 }
 
 // WithDir returns the vars with the section's working directory filled in.
@@ -43,10 +49,11 @@ func (v IssueVars) WithDir(dir string) IssueVars {
 	return v
 }
 
-// NewAskVars is NewIssueVars plus the assembled prompt. Both go through the same
-// quoting: a prompt carries an issue title and a description, which are free text
-// written by whoever filed the issue, and it is about to become a shell argument.
-func NewAskVars(i Issue, prompt string) IssueVars {
+// NewAskVars is NewIssueVars plus what the ask prompt produced. Both go through
+// the same quoting: a prompt carries an issue title and a description, which are
+// free text written by whoever filed the issue, and it is about to become a shell
+// argument.
+func NewAskVars(i Issue, prompt, input string) IssueVars {
 	return IssueVars{
 		IssueKey:   shellQuote(i.Key),
 		IssueURL:   shellQuote(i.URL),
@@ -55,6 +62,7 @@ func NewAskVars(i Issue, prompt string) IssueVars {
 		Assignee:   shellQuote(i.AssigneeName()),
 		ProjectKey: shellQuote(i.Project.Key),
 		Prompt:     shellQuote(prompt),
+		Input:      shellQuote(input),
 		// Quoted even when empty, so a command using it in a place that needs an
 		// argument gets '' rather than nothing at all and a shifted argv.
 		Dir: shellQuote(""),

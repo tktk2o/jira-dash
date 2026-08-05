@@ -738,6 +738,9 @@ type copiedMsg struct {
 type commandRanMsg struct {
 	key string
 	err error
+	// refresh is the keybinding's own refresh: flag, carried on the message so the
+	// handler does not have to find the keybinding again to know what to do next.
+	refresh bool
 }
 
 // copySelected puts a field of the selected issue on the clipboard via pbcopy.
@@ -784,7 +787,7 @@ func (m Model) runUserKeybindingWith(key, instruction string) (tea.Model, tea.Cm
 		}
 		vars := NewIssueVars(issue)
 		if instruction != "" {
-			vars = NewAskVars(issue, AskPrompt(issue, m.detailBody, instruction))
+			vars = NewAskVars(issue, AskPrompt(issue, m.detailBody, instruction), instruction)
 		}
 		dir := m.sections[m.active].cfg.Dir
 		rendered, err := RenderCommand(kb.Command, vars.WithDir(dir))
@@ -799,7 +802,7 @@ func (m Model) runUserKeybindingWith(key, instruction string) (tea.Model, tea.Cm
 		// exists, so this cannot fail the command with a directory error.
 		cmd.Dir = dir
 		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return commandRanMsg{key: kb.Key, err: err}
+			return commandRanMsg{key: kb.Key, err: err, refresh: kb.Refresh}
 		})
 	}
 	return m, nil

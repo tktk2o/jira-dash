@@ -686,6 +686,46 @@ func TestAskPromptCarriesTheIssueAndTheInstruction(t *testing.T) {
 	}
 }
 
+// {{.Input}} is the other half of the box: posting a comment must send the typed
+// text alone. Including the issue - as {{.Prompt}} deliberately does - would
+// publish the summary and description back into the comment on Jira.
+func TestInputCarriesTheTypedTextWithoutTheIssue(t *testing.T) {
+	issue := Issue{Key: "ABC-1", Summary: "トークン更新で 500 が出る"}
+	instruction := "こちらで再現しました"
+
+	vars := NewAskVars(issue, AskPrompt(issue, "## 再現手順", instruction), instruction)
+	got, err := RenderCommand("jira comment add {{.IssueKey}} -b {{.Input}}", vars)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(got, instruction) {
+		t.Errorf("the typed text is missing: %q", got)
+	}
+	for _, unwanted := range []string{"トークン更新", "再現手順"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("%q leaked into {{.Input}}: %q", unwanted, got)
+		}
+	}
+}
+
+// A comment that does not appear until the cursor leaves the row and comes back
+// reads as a comment that failed to post.
+func TestRefreshKeybindingReloadsThePreviewAfterItRan(t *testing.T) {
+	for _, tc := range []struct {
+		refresh bool
+		want    bool
+	}{{true, true}, {false, false}} {
+		m := askTestModel(t)
+
+		_, cmd := m.Update(commandRanMsg{key: "a", refresh: tc.refresh})
+
+		if got := cmd != nil; got != tc.want {
+			t.Errorf("refresh=%v: reloaded=%v, want %v", tc.refresh, got, tc.want)
+		}
+	}
+}
+
 // "*no description*" is this program's own words for an absent body, not
 // something the issue says. Forwarding it would have Claude answer about it.
 func TestAskPromptLeavesOutAnAbsentDescription(t *testing.T) {
@@ -703,7 +743,7 @@ func TestAskPromptLeavesOutAnAbsentDescription(t *testing.T) {
 func TestAskPromptIsShellQuotedLikeEveryOtherVariable(t *testing.T) {
 	issue := Issue{Key: "ABC-1", Summary: `x'; rm -rf ~ #`}
 
-	vars := NewAskVars(issue, AskPrompt(issue, "", "go"))
+	vars := NewAskVars(issue, AskPrompt(issue, "", "go"), "go")
 	got, err := RenderCommand("claude {{.Prompt}}", vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
