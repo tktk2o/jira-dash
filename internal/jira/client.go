@@ -56,10 +56,25 @@ type jiraErrorBody struct {
 	Errors        map[string]string `json:"errors"`
 }
 
-// do sends one request against path (relative to base, e.g. "/myself") and
-// decodes a 2xx JSON body into out. A nil out discards the body, for
+// do sends one request against path (relative to BaseURL, e.g. "/myself")
+// and decodes a 2xx JSON body into out. A nil out discards the body, for
 // endpoints called only for their side effect.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doAt(ctx, c.BaseURL(), method, path, body, out)
+}
+
+// doAgile is do's Agile-API counterpart: same request/error handling,
+// rooted at AgileURL instead of BaseURL. Boards and sprints (create.go's
+// ActiveSprint) live on that separate root, per client.go's own note on why
+// AgileURL exists.
+func (c *Client) doAgile(ctx context.Context, method, path string, body, out any) error {
+	return c.doAt(ctx, c.AgileURL(), method, path, body, out)
+}
+
+// doAt is do and doAgile's shared body, parameterised on which API root to
+// hit - the two APIs differ only in that root, never in auth, headers, or
+// error handling.
+func (c *Client) doAt(ctx context.Context, root, method, path string, body, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -69,7 +84,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		bodyReader = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL()+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, root+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}
