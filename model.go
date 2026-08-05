@@ -91,6 +91,21 @@ type debounceMsg struct {
 	key string
 }
 
+// choicesLoadedMsg carries the reply from a choicesFrom: transitions/assignees
+// fetch. It carries both the issue the fetch was for and the keybinding it was
+// for, and the seq the request was issued under, because all three can go
+// stale before the reply lands: the cursor can move to another issue, another
+// press of a different choices key can start a second fetch, and only comparing
+// seq (the debounceMsg pattern) would still open a picker for an issue the
+// cursor has since left if the key were pressed twice in a row on two rows.
+type choicesLoadedMsg struct {
+	seq   int
+	key   string
+	kbKey string
+	list  []Choice
+	err   error
+}
+
 // Model is the whole state of the dashboard, and Bubble Tea copies it by value
 // on every message. The fields it does not own - the config, the searcher, the
 // cache - are held as pointers or interfaces so that copy stays cheap.
@@ -138,6 +153,17 @@ type Model struct {
 	chooseList   []Choice
 	chooseCursor int
 
+	// loadingChoices and chooseSeq back choicesFrom: transitions/assignees, the
+	// two sources that need an API call before the box has anything to show.
+	// loadingChoices keeps the spinner ticking and the footer saying so while
+	// that call is in flight, in the gap where m.choosing is still false because
+	// the plan is explicit that an empty picker reads as a broken key. chooseSeq
+	// is compared against on arrival, the same way detailSeq is: a second press
+	// of a choices key - on this row or another - starts a new fetch, and the
+	// reply to the first must not then open a picker nobody asked for anymore.
+	loadingChoices bool
+	chooseSeq      int
+
 	// prompt is the input both boxes share. One textarea rather than a draft
 	// string each: it is what gives the box line numbers, a cursor that moves,
 	// and multi-line editing, none of which a string accumulating runes had.
@@ -155,6 +181,9 @@ type Model struct {
 
 // anyLoading answers whether the tick loop still has anything to animate.
 func (m Model) anyLoading() bool {
+	if m.loadingChoices {
+		return true
+	}
 	for _, s := range m.sections {
 		if s.loading {
 			return true
@@ -315,6 +344,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.spinner.Tick,
 			)
 		}
+		return m, nil
+
+	case choicesLoadedMsg:
+		m.loadingChoices = false
+		// Stale: a later press of a choices key - this one or another - has
+		// already superseded this fetch.
+		if msg.seq != m.chooseSeq {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = msg.kbKey + ": " + msg.err.Error()
+			return m, nil
+		}
+		// The cursor left this issue before the reply arrived. Opening now would
+		// attach transitions or assignees fetched for one issue to whatever row
+		// is under the cursor now.
+		if cur, ok := m.sections[m.active].selected(); !ok || cur.Key != msg.key {
+			m.status = ""
+			return m, nil
+		}
+		if len(msg.list) == 0 {
+			m.status = msg.kbKey + ": no choices to pick from"
+			return m, nil
+		}
+		m.status = ""
+		m.choosing = true
+		m.chooseKey = msg.kbKey
+		m.chooseList = msg.list
+		m.chooseCursor = 0
 		return m, nil
 
 	case debounceMsg:
@@ -545,14 +603,34 @@ func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.updatePrompt(msg)
 }
 
-// openChoosePrompt opens the picker for a keybinding with choices. The list is
-// resolved here, once, so that an empty one is reported as the config problem or
-// the empty tab it is, rather than as a box with nothing in it.
+// openChoosePrompt opens the picker for a keybinding with choices, or starts
+// loading one for a keybinding with choicesFrom: transitions/assignees.
+//
+// The two live sources do not open the box here: they hand back a command and
+// let choicesLoadedMsg open it once the reply is in. The plan for this is
+// explicit - an empty picker reads as a broken key, so the box has to wait for
+// candidates rather than show them arriving.
 func (m Model) openChoosePrompt(kb Keybinding) (tea.Model, tea.Cmd) {
-	if _, ok := m.sections[m.active].selected(); !ok {
+	issue, ok := m.sections[m.active].selected()
+	if !ok {
 		m.status = "nothing to change: this section has no rows"
 		return m, nil
 	}
+
+	if kb.ChoicesFrom == choicesFromTransitions || kb.ChoicesFrom == choicesFromAssignees {
+		m.chooseSeq++
+		m.loadingChoices = true
+		m.status = "loading " + kb.ChoicesFrom + "..."
+		return m, tea.Batch(
+			fetchChoices(m.searcher, m.chooseSeq, kb.Key, kb.ChoicesFrom, issue.Key),
+			m.spinner.Tick,
+		)
+	}
+
+	// The remaining two sources need no call: choices is written in the config,
+	// and statuses is derived from rows jhd already holds. The list is resolved
+	// here, once, so that an empty one is reported as the config problem or the
+	// empty tab it is, rather than as a box with nothing in it.
 	list := kb.Choices
 	if kb.ChoicesFrom == choicesFromStatuses {
 		list = m.sectionStatuses()
@@ -566,6 +644,37 @@ func (m Model) openChoosePrompt(kb Keybinding) (tea.Model, tea.Cmd) {
 	m.chooseList = list
 	m.chooseCursor = 0
 	return m, nil
+}
+
+// fetchChoices calls the API behind choicesFrom: transitions/assignees. seq and
+// kbKey travel with the reply so Update can tell a stale answer from a current
+// one without having to look the keybinding back up.
+func fetchChoices(s Searcher, seq int, kbKey, source, issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+
+		var list []Choice
+		var err error
+		switch source {
+		case choicesFromTransitions:
+			var transitions []Transition
+			transitions, err = s.Transitions(ctx, issueKey)
+			for _, t := range transitions {
+				// Label-less: jira edit -S takes the transition's name, so the name is
+				// both what the picker shows and what it sends, same as a status
+				// under choicesFrom: statuses.
+				list = append(list, Choice{Value: t.Name})
+			}
+		case choicesFromAssignees:
+			var users []User
+			users, err = s.AssignableUsers(ctx, issueKey, "")
+			for _, u := range users {
+				list = append(list, Choice{Label: u.DisplayName, Value: u.AccountID})
+			}
+		}
+		return choicesLoadedMsg{seq: seq, key: issueKey, kbKey: kbKey, list: list, err: err}
+	}
 }
 
 // sectionStatuses is the choicesFrom: statuses list - the status names the rows

@@ -207,57 +207,70 @@ Jira を書き換えるのは作成だけで、それ以外は設定のコマン
 `{{.Prompt}}` で書くとタイトルと本文までコメントとして Jira に載る。投稿系は
 `{{.Input}}`。
 
-## 選択肢から選ぶキー（`choices`）
+## 選択肢から選ぶキー（`choices` / `choicesFrom`）
 
-`choices` を付けたキーは、同じ枠に**リストを出して選ばせる**（`j`/`k` で移動、
-`enter` で決定、`esc` で取消）。選んだ値が `{{.Choice}}` に入る。担当者やステータスの
-ように**受け付ける値が短い固定集合**のものは、打つより選ぶほうが速く、かつ確実 —
-accountId とサイト固有のステータス名は、誰も記憶から正しく打てない。
+`choices` か `choicesFrom` を付けたキーは、同じ枠に**リストを出して選ばせる**
+（`j`/`k` で移動、`enter` で決定、`esc` で取消）。選んだ値が `{{.Choice}}` に入る。
+担当者やステータスのように**受け付ける値が短い固定集合**のものは、打つより選ぶほうが
+速く、かつ確実 — accountId とサイト固有のステータス名は、誰も記憶から正しく打てない。
+
+`choicesFrom` には3つのソースがある。
 
 ```yaml
-#: ステータスを変える
+#: ステータスを変える（今実際に選べる遷移から）
 - key: s
   name: status
-  choicesFrom: statuses
+  choicesFrom: transitions
   refresh: true
   command: jira edit {{.IssueKey}} -S {{.Choice}}
 
-#: 担当者を変える
+#: 担当者を変える（その課題に割り当て可能なユーザーから）
 - key: A
   name: assign
-  choices:
-    - label: 自分       # label が表示、value が渡る値
-      value: <accountId>
-    - label: 解除
-      value: "null"
+  choicesFrom: assignees
   refresh: true
   command: jira edit {{.IssueKey}} -a {{.Choice}}
+
+#: 固定の一覧から選ぶ（choices — API を呼ばず、いつでも同じ選択肢を出す）
+- key: p
+  name: priority
+  choices:
+    - label: 高
+      value: High
+    - label: 低
+      value: Low
+  refresh: true
+  command: jira edit {{.IssueKey}} --priority {{.Choice}}
 ```
 
-`label` と `value` が別なのは、まさに選択肢が要る値でその2つが食い違うから — 担当者は
-**名前で選んで accountId で送る**。`label` を省くと `value` がそのまま表示される
-（ステータス名はこれで足りる）。
+- **`choicesFrom: transitions`** — その課題で今実際に選べる遷移（`GET
+  /issue/{key}/transitions`）。ワークフローが許す遷移しか出ないので、行の status か
+  ら作る `statuses` より正確。label は付かず、遷移名がそのまま表示され、そのまま
+  `{{.Choice}}` に渡る — `jira edit -S <名前>` が内部で同じ一覧を引いて名前照合するの
+  で、名前がそのまま送る形として合っている。
+- **`choicesFrom: assignees`** — その課題に割り当て可能なユーザー（`GET
+  /user/assignable/search`）。label が表示名、value が accountId — `jira edit -a`
+  は accountId をそのまま送るだけで表示名を解決しないので、accountId を手で調べて
+  設定に貼る作業がここで無くなる。
+- **`choicesFrom: statuses`** — 設定ではなく**ダッシュボード自身の状態**から候補を作
+  る（今のタブの行が持っている status、重複を除いて出現順）。**唯一 API を呼ばない
+  ソース**なので、オフラインでも開けるのはこれだけ。限界も明確: 行が無い status は出
+  ない — 誰も完了していないタブに「完了」は出てこない。
 
-`choicesFrom: statuses` は設定ではなく**ダッシュボード自身の状態**から候補を作る
-（今のタブの行が持っている status、重複を除いて出現順）。**限界も明確**: 行が無い
-status は出ない — 誰も完了していないタブに「完了」は出てこない。固定の一覧が欲しければ
-`choicesFrom` を消して `choices` に列挙する。
+`transitions` / `assignees` は API 呼び出しなので、キーを押した瞬間には枠は開かない
+（フッターに読み込み中と出る）。候補が届いてから開く — 候補ゼロの枠は壊れたキーに
+見えるので、届く前に開くことはしない。取得に失敗した場合も枠は開かず、フッターに
+理由が出る。
+
+固定の一覧が欲しければ（サイトに問い合わせず、いつも同じ選択肢を出したければ）
+`choicesFrom` を消して `choices` に列挙する。`label` と `value` が別なのは、まさに
+選択肢が要る値でその2つが食い違う場合のため — `label` を省くと `value` がそのまま
+表示される。
 
 `prompt` / `choices` / `choicesFrom` を同じキーに2つ以上書くと**起動時に落ちる**。
 1つのキーが開けるものは1つで、両方書くと先に見たほうが黙って勝つ。
 
-### CLI 側の制約（なぜ候補を設定に書くのか）
-
-`jira edit -S <名前>` は内部で `/transitions` を引いて名前で照合するが、**一覧を出す
-コマンドが無い**。`-a` は **accountId をそのまま送るだけ**で表示名を解決せず、ユーザー
-検索コマンドも無い。だから jhd 側から本物の候補を取る経路が今は無く、`choices` は
-設定に書くか行から作るかになる。
-
-`jira users assignable <key>` と `jira transitions <key>` を CLI に足せば両方とも
-本来の形（課題ごとに正しい候補、設定ゼロ）になる。`getTransitions()` は CLI 内に
-**すでに実装済み**で、コマンドとして露出していないだけ。
-
-自分の accountId は `jira auth status` が出す。
+自分の accountId は `jira auth status` が出す（`choices` に手で書く場合に使う）。
 
 ## 課題の作成
 

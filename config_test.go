@@ -308,10 +308,30 @@ keybindings:
   issues:
     - key: s
       command: "true"
-      choicesFrom: assignees
+      choicesFrom: bogus
 `))
 	if err == nil || !strings.Contains(err.Error(), "choicesFrom") {
 		t.Fatalf("want a refusal for an unknown choicesFrom, got %v", err)
+	}
+}
+
+// transitions and assignees are the two Task 12 added; a regression that
+// dropped either from the accepted set would only surface once someone typed
+// it into a real config, long after the config that broke it was edited.
+func TestConfigAcceptsTransitionsAndAssigneesChoicesFrom(t *testing.T) {
+	for _, source := range []string{"statuses", "transitions", "assignees"} {
+		_, err := LoadConfig(writeConfig(t, `jiraSections:
+  - title: A
+    jql: project = A
+keybindings:
+  issues:
+    - key: s
+      command: "true"
+      choicesFrom: `+source+`
+`))
+		if err != nil {
+			t.Errorf("choicesFrom: %s should be accepted, got %v", source, err)
+		}
 	}
 }
 

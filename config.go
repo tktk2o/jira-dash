@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 )
@@ -99,11 +100,11 @@ type Keybinding struct {
 	// a line you type: the values are account ids and site-specific status names,
 	// which are not things anyone types correctly from memory.
 	Choices []Choice `yaml:"choices"`
-	// ChoicesFrom builds the picker from the dashboard's own state instead of from
-	// the config. Only "statuses" exists - the status names the current tab's rows
-	// have - because that is the only such list jhd holds. The jira CLI resolves a
-	// status name to a transition itself, but offers no way to list them, so this
-	// is as close to the real transitions as jhd can get without its own API call.
+	// ChoicesFrom builds the picker from a live source instead of the config.
+	// "statuses" derives the list from the current tab's rows - no API call, so
+	// it is the only source that still works offline. "transitions" and
+	// "assignees" call Jira for the selected issue's real transitions and
+	// assignable users - see choicesFromTransitions and choicesFromAssignees.
 	ChoicesFrom string `yaml:"choicesFrom"`
 	// Refresh reloads the preview once the command exits without error, for a key
 	// that changed the issue - a posted comment is otherwise invisible until the
@@ -125,9 +126,22 @@ type Choice struct {
 // Name is what the picker draws for this entry.
 func (c Choice) Name() string { return orDefault(c.Label, c.Value) }
 
-// choicesFromStatuses is the only ChoicesFrom source there is. Named so the
-// check that accepts it and the code that reads it cannot drift apart.
+// choicesFromStatuses derives the picker from the status names the current
+// tab's rows carry - the only source with no API call, so the only one that
+// still opens with a dead network.
 const choicesFromStatuses = "statuses"
+
+// choicesFromTransitions derives the picker from the transitions Jira's
+// workflow actually allows on the selected issue right now (Client.Transitions).
+const choicesFromTransitions = "transitions"
+
+// choicesFromAssignees derives the picker from the users Jira actually allows
+// assigning the selected issue to (Client.AssignableUsers).
+const choicesFromAssignees = "assignees"
+
+// choicesFromSources is every accepted ChoicesFrom value. Named so the load-time
+// check and the error message that names the accepted set cannot drift apart.
+var choicesFromSources = []string{choicesFromStatuses, choicesFromTransitions, choicesFromAssignees}
 
 // Theme is the colours the dashboard draws in. Every field is optional: an
 // unset colour falls back to the Dracula shade the layout was designed against.
@@ -249,9 +263,9 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, fmt.Errorf(
 				"%s: keybinding %q sets more than one of prompt, choices and choicesFrom", path, k.Key)
 		}
-		if k.ChoicesFrom != "" && k.ChoicesFrom != choicesFromStatuses {
-			return nil, fmt.Errorf("%s: keybinding %q has unknown choicesFrom %q (only %q)",
-				path, k.Key, k.ChoicesFrom, choicesFromStatuses)
+		if k.ChoicesFrom != "" && !slices.Contains(choicesFromSources, k.ChoicesFrom) {
+			return nil, fmt.Errorf("%s: keybinding %q has unknown choicesFrom %q (want one of %q)",
+				path, k.Key, k.ChoicesFrom, choicesFromSources)
 		}
 		for j, c := range k.Choices {
 			// A value-less entry would send an empty argument, which for `jira edit`

@@ -119,24 +119,22 @@ keybindings:
     #: ステータスを変える（遷移先を選ぶ）
     - key: s
       name: status
-      # 候補は「今のタブの行が持っている status」。設定不要だが、行が無い status は
-      # 出てこない（誰も完了していないタブに「完了」は出ない）。固定の一覧が
-      # 欲しければ choicesFrom を消して choices に列挙する。
-      choicesFrom: statuses
+      # 候補はその課題で今実際に選べる遷移（GET /issue/{key}/transitions）。
+      # ワークフローが許す遷移しか出ないので、行の status から作る choicesFrom:
+      # statuses より正確 — ネットワークが無いときだけ statuses に戻す。
+      choicesFrom: transitions
       refresh: true
       command: jira edit {{.IssueKey}} -S {{.Choice}}
 
     #: 担当者を変える
     - key: A
       name: assign
-      # jira CLI の -a は accountId をそのまま送るだけで、表示名を解決しない。
-      # ユーザー検索コマンドも無いので、accountId は Jira の UI か API で調べて
-      # ここに貼る。自分の分は `jira auth status` が出す。
-      choices:
-        - label: 自分
-          value: <your accountId>
-        - label: 解除
-          value: "null"
+      # 候補はその課題に割り当て可能なユーザー一覧（GET /user/assignable/search）。
+      # label が表示名、value が accountId — jira CLI の -a はそのまま送るだけで
+      # 表示名を解決しないので、accountId を手で貼る作業がここで無くなる。
+      # 固定の担当者だけ選べればよければ choicesFrom を消して choices に列挙する
+      # （下の「選択肢から選ぶキー」参照）。
+      choicesFrom: assignees
       refresh: true
       command: jira edit {{.IssueKey}} -a {{.Choice}}
 

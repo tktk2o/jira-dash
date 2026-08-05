@@ -18,6 +18,18 @@ type fakeSearcher struct {
 	// created records what the create prompt asked for, so a test can assert the
 	// project and sprint were read off the row rather than typed by hand.
 	created *[]NewIssueRequest
+
+	// transitions and assignableUsers back choicesFrom: transitions/assignees.
+	// Separate from err so a test can make Search succeed (there are rows to
+	// pick from) while the choices call itself fails.
+	transitions     []Transition
+	assignableUsers []User
+	choicesErr      error
+	// transitionsCalledWith and assignableUsersCalledWith record the issue key
+	// each was called with, so a test can assert the fetch went out for the row
+	// under the cursor rather than some other one.
+	transitionsCalledWith     *[]string
+	assignableUsersCalledWith *[]string
 }
 
 func (f fakeSearcher) Create(_ context.Context, req NewIssueRequest) (Issue, error) {
@@ -49,6 +61,26 @@ func (f fakeSearcher) Comments(_ context.Context, key string) ([]Comment, error)
 		return nil, f.err
 	}
 	return []Comment{{ID: "1", Author: "甲", Body: "a comment on " + key}}, nil
+}
+
+func (f fakeSearcher) Transitions(_ context.Context, key string) ([]Transition, error) {
+	if f.transitionsCalledWith != nil {
+		*f.transitionsCalledWith = append(*f.transitionsCalledWith, key)
+	}
+	if f.choicesErr != nil {
+		return nil, f.choicesErr
+	}
+	return f.transitions, nil
+}
+
+func (f fakeSearcher) AssignableUsers(_ context.Context, issueKey, _ string) ([]User, error) {
+	if f.assignableUsersCalledWith != nil {
+		*f.assignableUsersCalledWith = append(*f.assignableUsersCalledWith, issueKey)
+	}
+	if f.choicesErr != nil {
+		return nil, f.choicesErr
+	}
+	return f.assignableUsers, nil
 }
 
 func testConfig() *Config {
@@ -846,6 +878,206 @@ func TestPickerRefusesWhenThereIsNothingToPickFrom(t *testing.T) {
 	}
 	if m.status == "" {
 		t.Error("refusing silently leaves the key looking broken")
+	}
+}
+
+// liveChoicesTestModel is a model with one choicesFrom: transitions and one
+// choicesFrom: assignees keybinding, over one issue - the two sources that need
+// an API call before the picker has anything to show.
+func liveChoicesTestModel(t *testing.T, s fakeSearcher) Model {
+	m := newTestModel(t, s)
+	m.cfg.Keybindings.Issues = []Keybinding{{
+		Key: "s", Name: "status", ChoicesFrom: choicesFromTransitions,
+		Command: "jira edit {{.IssueKey}} -S {{.Choice}}",
+	}, {
+		Key: "A", Name: "assign", ChoicesFrom: choicesFromAssignees,
+		Command: "jira edit {{.IssueKey}} -a {{.Choice}}",
+	}}
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	return settled(next.(Model))
+}
+
+// The picker must not open on the keypress that starts the fetch: an empty box
+// while the call is in flight reads as a broken key, which is exactly what a
+// still-loading picker looks like.
+func TestChoicesFromTransitionsDoesNotOpenUntilTheReplyArrives(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{})
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = next.(Model)
+
+	if m.choosing {
+		t.Fatal("the picker should not open before the transitions have arrived")
+	}
+	if cmd == nil {
+		t.Fatal("pressing the key should start the fetch")
+	}
+	if m.status == "" {
+		t.Error("the footer should say something is loading")
+	}
+}
+
+// Once the reply lands, the picker opens with the transition names it carried -
+// label and value both the name, since jira edit -S resolves a name to a
+// transition id itself and always has.
+func TestChoicesFromTransitionsOpensWithTheRealTransitions(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{transitions: []Transition{
+		{ID: "11", Name: "In Progress"}, {ID: "21", Name: "Done"},
+	}})
+	m = press(m, "s")
+
+	next, _ := m.Update(choicesLoadedMsg{
+		seq: m.chooseSeq, key: "ABC-1", kbKey: "s",
+		list: []Choice{{Value: "In Progress"}, {Value: "Done"}},
+	})
+	m = next.(Model)
+
+	if !m.choosing {
+		t.Fatal("the picker should be open now that the transitions have arrived")
+	}
+	var got []string
+	for _, c := range m.chooseList {
+		got = append(got, c.Value)
+	}
+	if want := []string{"In Progress", "Done"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("choices = %v, want %v", got, want)
+	}
+}
+
+// Label is the display name and value is the account id: an assignee is picked
+// by name and sent as the id jira edit -a actually wants.
+func TestChoicesFromAssigneesOpensWithLabelAndAccountID(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{assignableUsers: []User{
+		{AccountID: "acc-1", DisplayName: "誰か"},
+	}})
+	m = press(m, "A")
+
+	next, _ := m.Update(choicesLoadedMsg{
+		seq: m.chooseSeq, key: "ABC-1", kbKey: "A",
+		list: []Choice{{Label: "誰か", Value: "acc-1"}},
+	})
+	m = next.(Model)
+
+	if !m.choosing || len(m.chooseList) != 1 {
+		t.Fatal("the picker should be open with the one assignable user")
+	}
+	if got := m.chooseList[0]; got.Label != "誰か" || got.Value != "acc-1" {
+		t.Errorf("got %+v, want label 誰か / value acc-1", got)
+	}
+}
+
+// Exercises the real command the keypress returns, not a hand-built message:
+// it must call Transitions with the row under the cursor's key, and the
+// resulting message must be the one Update opens the picker on.
+func TestChoicesFromTransitionsCommandCallsTheAPIWithTheSelectedIssue(t *testing.T) {
+	var calledWith []string
+	m := liveChoicesTestModel(t, fakeSearcher{
+		transitions:           []Transition{{ID: "11", Name: "In Progress"}},
+		transitionsCalledWith: &calledWith,
+	})
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("pressing the key should start the fetch")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("got %T, want a batch of the fetch and the spinner tick", cmd())
+	}
+	var got *choicesLoadedMsg
+	for _, c := range batch {
+		if msg, ok := c().(choicesLoadedMsg); ok {
+			got = &msg
+		}
+	}
+	if got == nil {
+		t.Fatal("the batch should contain the fetch's own message")
+	}
+	if want := []string{"ABC-1"}; !reflect.DeepEqual(calledWith, want) {
+		t.Errorf("Transitions was called with %v, want %v", calledWith, want)
+	}
+	if got.list[0].Value != "In Progress" {
+		t.Errorf("choicesLoadedMsg carried %v, want the transition's name", got.list)
+	}
+
+	next, _ = m.Update(*got)
+	if !next.(Model).choosing {
+		t.Error("Update should open the picker on this message")
+	}
+}
+
+// A failed fetch must say so and open nothing - a broken picker is worse than a
+// footer message.
+func TestChoicesFromTransitionsReportsAFailureInTheFooter(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{})
+	m = press(m, "s")
+
+	next, _ := m.Update(choicesLoadedMsg{seq: m.chooseSeq, key: "ABC-1", kbKey: "s", err: errors.New("boom")})
+	m = next.(Model)
+
+	if m.choosing {
+		t.Error("a failed fetch must not open the picker")
+	}
+	if m.status == "" {
+		t.Error("a failed fetch must say so in the footer")
+	}
+}
+
+// An issue with no transitions available is the same "nothing to pick from" as
+// an empty choices list - reported, not a silently empty box.
+func TestChoicesFromTransitionsWithNoneAvailableReportsRatherThanOpeningEmpty(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{})
+	m = press(m, "s")
+
+	next, _ := m.Update(choicesLoadedMsg{seq: m.chooseSeq, key: "ABC-1", kbKey: "s"})
+	m = next.(Model)
+
+	if m.choosing {
+		t.Error("an empty result must not open the picker")
+	}
+	if m.status == "" {
+		t.Error("an empty result should still say something, not silently do nothing")
+	}
+}
+
+// A reply for a fetch a later keypress has already superseded must not open a
+// picker nobody is waiting for anymore.
+func TestStaleChoicesReplyIsDropped(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{})
+	m = press(m, "s")
+	staleSeq := m.chooseSeq
+	m = press(m, "A") // a second fetch starts; chooseSeq moves on.
+
+	next, _ := m.Update(choicesLoadedMsg{
+		seq: staleSeq, key: "ABC-1", kbKey: "s", list: []Choice{{Value: "In Progress"}},
+	})
+	m = next.(Model)
+
+	if m.choosing {
+		t.Error("the superseded reply must not open a picker")
+	}
+}
+
+// A reply that arrives after the cursor has moved to another issue must not
+// open a picker about the row it was fetched for - it would attach one issue's
+// transitions to whatever row is under the cursor now.
+func TestChoicesReplyForAnIssueTheCursorHasLeftIsDropped(t *testing.T) {
+	m := liveChoicesTestModel(t, fakeSearcher{})
+	m = press(m, "s")
+	seq := m.chooseSeq
+	// The cursor moves to a different section before the reply arrives.
+	next, _ := m.Update(fetchedMsg{idx: 1, issues: issues("XYZ-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+	m.active = 1
+
+	next, _ = m.Update(choicesLoadedMsg{
+		seq: seq, key: "ABC-1", kbKey: "s", list: []Choice{{Value: "In Progress"}},
+	})
+	m = next.(Model)
+
+	if m.choosing {
+		t.Error("a reply for a row the cursor has left must not open a picker")
 	}
 }
 

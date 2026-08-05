@@ -15,6 +15,8 @@ type Issue = jirapkg.Issue
 type Sprint = jirapkg.Sprint
 type Comment = jirapkg.Comment
 type JiraTime = jirapkg.JiraTime
+type Transition = jirapkg.Transition
+type User = jirapkg.User
 
 // Searcher is the only door to the outside world. Keeping it one interface
 // means the whole UI is testable without a network, and that the CLI can be
@@ -23,11 +25,18 @@ type JiraTime = jirapkg.JiraTime
 // Create is the one write in the whole program. It is on this interface rather
 // than routed through a user-configured command because the summary has to be
 // typed into the dashboard, and a config command cannot ask for input.
+//
+// Transitions and AssignableUsers back the two choicesFrom sources that need a
+// live call (choicesFromTransitions / choicesFromAssignees in config.go) -
+// choicesFrom: statuses needs neither, since it is derived from rows jhd
+// already holds.
 type Searcher interface {
 	Search(ctx context.Context, jql string, limit int) ([]Issue, error)
 	Issue(ctx context.Context, key string) (string, error)
 	Comments(ctx context.Context, key string) ([]Comment, error)
 	Create(ctx context.Context, req NewIssueRequest) (Issue, error)
+	Transitions(ctx context.Context, key string) ([]Transition, error)
+	AssignableUsers(ctx context.Context, issueKey, query string) ([]User, error)
 }
 
 // NewIssueRequest is everything the create prompt collects. Project and sprint
@@ -86,4 +95,18 @@ func (a Adapter) Create(ctx context.Context, req NewIssueRequest) (Issue, error)
 		Summary:    req.Summary,
 		Sprint:     req.Sprint,
 	})
+}
+
+// Transitions lists the status changes key can make right now, for the
+// choicesFrom: transitions picker.
+func (a Adapter) Transitions(ctx context.Context, key string) ([]Transition, error) {
+	return a.Client.Transitions(ctx, key)
+}
+
+// AssignableUsers lists the accounts issueKey can be assigned to, for the
+// choicesFrom: assignees picker. The picker has no text field to type a query
+// into, so the model always calls this with an empty one - kept on the
+// interface anyway so Adapter matches Client's own shape exactly.
+func (a Adapter) AssignableUsers(ctx context.Context, issueKey, query string) ([]User, error) {
+	return a.Client.AssignableUsers(ctx, issueKey, query)
 }
