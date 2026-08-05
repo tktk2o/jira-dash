@@ -89,3 +89,52 @@ func LoadCredentials() (Credentials, error) {
 		SiteName: fc.SiteName,
 	}, nil
 }
+
+// CredentialsSource reports which of LoadCredentials' two sources won,
+// without duplicating that function's own resolution logic in the caller.
+// `jira auth status` uses this to say where its answer came from.
+func CredentialsSource() string {
+	if os.Getenv("JIRA_EMAIL") != "" && os.Getenv("JIRA_API_TOKEN") != "" && os.Getenv("JIRA_CLOUD_ID") != "" {
+		return "environment variables"
+	}
+	return "the saved credentials file"
+}
+
+// SaveCredentials writes c to disk in exactly the shape the old CLI wrote:
+// the same keys, APIToken base64-encoded, file mode 0o600, at the same path
+// LoadCredentials reads. That byte-for-byte compatibility - not merely
+// "something LoadCredentials can parse" - is what keeps rolling back to the
+// old CLI possible: it reads this file too, and never needs to know a Go
+// tool touched it. Returns the path written, so the caller can tell the
+// person where their credentials went without hardcoding it twice.
+func SaveCredentials(c Credentials) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home directory to save credentials into: %w", err)
+	}
+
+	dir := filepath.Join(home, ".config", "jira-cli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", dir, err)
+	}
+
+	fc := fileCredentials{
+		Email:    c.Email,
+		APIToken: base64.StdEncoding.EncodeToString([]byte(c.APIToken)),
+		CloudID:  c.CloudID,
+		SiteURL:  c.SiteURL,
+		SiteName: c.SiteName,
+	}
+	raw, err := json.Marshal(fc)
+	if err != nil {
+		return "", fmt.Errorf("encoding credentials: %w", err)
+	}
+
+	path := filepath.Join(dir, "credentials.json")
+	// 0o600 from the start, not a chmod after the fact: a window where the
+	// token sat world- or group-readable would defeat the point of the mode.
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	return path, nil
+}

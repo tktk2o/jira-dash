@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -109,6 +110,121 @@ func TestCredentialsNamesTheFixWhenTheStoredTokenIsCorrupted(t *testing.T) {
 	_, err := LoadCredentials()
 	if err == nil || !strings.Contains(err.Error(), "jira auth login") {
 		t.Fatalf("want an actionable error for a corrupted token, got %v", err)
+	}
+}
+
+// SaveCredentials then LoadCredentials must round-trip every field -
+// otherwise a login-then-status sequence would report something other than
+// what was just typed in.
+func TestSaveCredentialsRoundTripsThroughLoadCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, v := range []string{"JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_CLOUD_ID"} {
+		t.Setenv(v, "")
+	}
+
+	want := Credentials{
+		Email:    "a@example.com",
+		APIToken: "a-fresh-token",
+		CloudID:  "cloud-1",
+		SiteURL:  "https://site.example.com",
+		SiteName: "Ada Lovelace",
+	}
+	if _, err := SaveCredentials(want); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("LoadCredentials() = %+v, want %+v", got, want)
+	}
+}
+
+// The saved file must be exactly 0o600 - anything more permissive would
+// leave the token readable by other accounts on the machine.
+func TestSaveCredentialsWritesFileMode0600(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path, err := SaveCredentials(Credentials{Email: "a@example.com", APIToken: "tok", CloudID: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// SaveCredentials must write the old CLI's own key names and base64
+// treatment, not just something LoadCredentials happens to accept - a
+// rollback to the old CLI reads this file directly, without going through
+// this package at all.
+func TestSaveCredentialsUsesTheOldCLIsFieldNamesAndBase64Token(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path, err := SaveCredentials(Credentials{
+		Email: "a@example.com", APIToken: "a-fresh-token", CloudID: "cloud-1",
+		SiteURL: "https://site.example.com", SiteName: "Ada Lovelace",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"email", "apiToken", "cloudId", "siteUrl", "siteName"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("field %q missing from the saved JSON: %v", key, m)
+		}
+	}
+	if m["email"] != "a@example.com" {
+		t.Errorf("email = %v", m["email"])
+	}
+	if m["apiToken"] == "a-fresh-token" {
+		t.Error("apiToken was written raw, not base64-encoded")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(m["apiToken"].(string))
+	if err != nil {
+		t.Fatalf("apiToken is not valid base64: %v", err)
+	}
+	if string(decoded) != "a-fresh-token" {
+		t.Errorf("decoded apiToken = %q, want the original token", decoded)
+	}
+}
+
+// A file written by SaveCredentials must load correctly when reopened as if
+// by the old CLI, i.e. through the same writeCreds-shaped path this test
+// file already exercises for a hand-written fixture.
+func TestSaveCredentialsProducesAFileLoadCredentialsCanReread(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, v := range []string{"JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_CLOUD_ID"} {
+		t.Setenv(v, "")
+	}
+
+	if _, err := SaveCredentials(Credentials{Email: "a@example.com", APIToken: "tok", CloudID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIToken != "tok" {
+		t.Errorf("APIToken = %q", got.APIToken)
 	}
 }
 

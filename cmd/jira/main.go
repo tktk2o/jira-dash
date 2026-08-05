@@ -66,7 +66,7 @@ func run(args []string, stdout, stderr io.Writer, newClient func() (jiraClient, 
 	// exist, so it is the one exception to "every subcommand gets a
 	// client" below.
 	if cmd == "auth" {
-		if err := runAuth(rest); err != nil {
+		if err := runAuth(rest, os.Stdin, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

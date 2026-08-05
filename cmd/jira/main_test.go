@@ -8,8 +8,15 @@ import (
 
 // run must never call newClient for `jira auth ...`: that path exists
 // precisely for a machine with no credentials yet, so it cannot depend on
-// LoadCredentials succeeding.
+// LoadCredentials succeeding. auth resolves its own credentials internally
+// (LoadCredentials/verifyCredentials), never through the injected newClient
+// used by every other subcommand.
 func TestRunNeverBuildsAClientForAuth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, v := range []string{"JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_CLOUD_ID"} {
+		t.Setenv(v, "")
+	}
+
 	newClientCalled := false
 	newClient := func() (jiraClient, error) {
 		newClientCalled = true
@@ -20,10 +27,13 @@ func TestRunNeverBuildsAClientForAuth(t *testing.T) {
 	if newClientCalled {
 		t.Error("newClient was called for jira auth")
 	}
+	// No credentials exist in this HOME, so status must fail (there is
+	// nothing to report) - but through auth's own LoadCredentials call, not
+	// through the injected newClient above.
 	if code == 0 {
-		t.Error("want a non-zero exit: auth is stubbed as not implemented")
+		t.Error("want a non-zero exit: no credentials are configured")
 	}
-	if !strings.Contains(stderr.String(), "not implemented") {
+	if !strings.Contains(stderr.String(), "jira auth login") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
