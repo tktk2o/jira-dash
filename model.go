@@ -130,6 +130,12 @@ type Model struct {
 	detailBody     string
 	detailComments []Comment
 
+	// detailBodyDone separates "the description has not arrived yet" from "it
+	// arrived and is empty". Without it an issue with no description read as a
+	// fetch that never finished - the pane said "loading..." forever, since an
+	// empty detailBody was the only signal either state had.
+	detailBodyDone bool
+
 	filtering   bool
 	filterDraft string
 
@@ -306,12 +312,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case issueLoadedMsg:
 		if msg.err != nil {
 			m.status = msg.err.Error()
+			// A failed fetch is still a finished one. Leaving the pane on
+			// "loading..." would contradict the error in the footer.
+			if msg.key != "" && msg.key == m.detailKey {
+				m.detailBodyDone = true
+				m.refreshDetail(false)
+			}
 			return m, nil
 		}
 		// A reply for a row the cursor has already left must not overwrite the
 		// pane with another issue's text.
 		if msg.key != "" && msg.key == m.detailKey {
 			m.detailBody = msg.markdown
+			m.detailBodyDone = true
 			m.refreshDetail(false)
 		}
 		return m, nil

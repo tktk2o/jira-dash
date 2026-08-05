@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"regexp"
 
 	"github.com/mattn/go-runewidth"
@@ -234,6 +235,49 @@ func TestPreviewAssemblesHeaderBodyAndComments(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("preview missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// Most issues on a real board carry no description at all, and the pane used to
+// hold "loading..." for every one of them - indistinguishable from a fetch that
+// never returned, which is exactly how it was reported.
+func TestPreviewSaysNoDescriptionRatherThanLoadingForever(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	// Before the reply, "loading..." is the honest answer.
+	if !strings.Contains(plain(m.detail.View()), "loading...") {
+		t.Errorf("expected loading before the reply:\n%s", plain(m.detail.View()))
+	}
+
+	next, _ = m.Update(issueLoadedMsg{key: "ABC-1", markdown: ""})
+	m = next.(Model)
+
+	out := plain(m.detail.View())
+	if strings.Contains(out, "loading...") {
+		t.Errorf("the fetch finished; the pane must not still say loading:\n%s", out)
+	}
+	if !strings.Contains(out, "no description") {
+		t.Errorf("expected 'no description':\n%s", out)
+	}
+}
+
+// A failed fetch is a finished one: leaving the pane on "loading..." would
+// contradict the error the footer is showing.
+func TestPreviewStopsLoadingWhenTheBodyFetchFails(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	next, _ = m.Update(issueLoadedMsg{key: "ABC-1", err: errors.New("boom")})
+	m = next.(Model)
+
+	if strings.Contains(plain(m.detail.View()), "loading...") {
+		t.Errorf("expected the pane to stop loading after an error:\n%s", plain(m.detail.View()))
+	}
+	if !strings.Contains(m.status, "boom") {
+		t.Errorf("status = %q, want the error", m.status)
 	}
 }
 
