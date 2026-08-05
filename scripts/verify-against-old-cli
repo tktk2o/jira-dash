@@ -1,0 +1,266 @@
+#!/bin/bash
+#
+# verify-against-old-cli - diff the Go `jira` CLI against the TypeScript one
+# it replaces, on real issues, read-only.
+#
+# Why real issues rather than fixtures: the whole point of this script is
+# to catch drift between this repo's HTTP calls and what the platform API
+# actually returns *today* - a fixture would only prove the two CLIs agree
+# on a fixture, which neither of them consults.
+#
+# Why no issue key is hardcoded: a key like "CHIK-1234" would put a real
+# project's prefix in a tracked file, which the migration plan's Global
+# Constraints ban (see docs/plan-cli-migration.local.md). Every key this
+# script touches comes from running the *old* CLI's own search first.
+#
+# macOS ships bash 3.2 (no mapfile, no associative arrays), and this must
+# run on this machine unmodified - see scripts/jhd-claude-split for the
+# same constraint.
+set -euo pipefail
+
+readonly OLD_CLI=jira
+readonly NEW_CLI="${NEW_CLI:-$HOME/.local/bin/jira-next}"
+# assignee = currentUser() names no project, org, or site - it resolves to
+# whichever account owns the credentials file this runs under, on either
+# CLI, on any machine.
+readonly DISCOVERY_JQL='assignee = currentUser() order by updated desc'
+
+fail_count=0
+skip_count=0
+
+note() { printf '%s\n' "$*" >&2; }
+
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() {
+	printf 'FAIL  %s\n' "$1"
+	if [[ -n "${2:-}" ]]; then
+		printf '%s\n' "$2" | sed 's/^/      /'
+	fi
+	fail_count=$((fail_count + 1))
+}
+skip() {
+	printf 'SKIP  %s (%s)\n' "$1" "$2"
+	skip_count=$((skip_count + 1))
+}
+
+# A missing jq or old CLI is "nothing to compare against yet", not a defect
+# in the new CLI - failing loudly here would make a fresh machine's first
+# run look like a regression.
+if ! command -v jq >/dev/null 2>&1; then
+	note "verify-against-old-cli: jq not found; skipping every comparison"
+	exit 0
+fi
+if ! command -v "$OLD_CLI" >/dev/null 2>&1; then
+	note "verify-against-old-cli: old CLI ($OLD_CLI) not on PATH; skipping every comparison"
+	exit 0
+fi
+if [[ ! -x "$NEW_CLI" ]]; then
+	note "verify-against-old-cli: new CLI not found at $NEW_CLI (build it: go build -o \"$NEW_CLI\" ./cmd/jira)"
+	exit 1
+fi
+
+# normalize_time rewrites a Jira timestamp's zone offset from "+0900" to
+# "+09:00" (or the reverse) so `jira` and `jira-next` timestamps compare
+# equal. internal/jira.JiraTime round-trips through time.Time's own
+# MarshalJSON (RFC 3339, colon), where the old CLI prints Jira's own wire
+# format (no colon) verbatim - same instant, same precision, cosmetically
+# different text. Rewriting old's form to new's, once, in one place, beats
+# teaching every per-command filter below about it.
+normalize_time() {
+	jq -S 'walk(if type == "string" and test("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?[+-][0-9]{4}$") then sub("(?<off>[+-][0-9]{2})(?<m>[0-9]{2})$"; "\(.off):\(.m)") else . end)'
+}
+
+# discover_keys asks the OLD CLI (never the new one - the point is to test
+# the new one against issues neither CLI chose) for a handful of the
+# caller's own recent issues. Nothing here is a project key: JQL identifies
+# the account, not a project.
+discover_keys() {
+	local n=$1
+	"$OLD_CLI" search --jql "$DISCOVERY_JQL" -l "$n" -f json 2>/dev/null |
+		jq -r '.results[].key' 2>/dev/null || true
+}
+
+# run_both executes the same args on both CLIs and leaves stdout in
+# $old_out / $new_out, exit codes in $old_rc / $new_rc. Globals rather than
+# a return value: bash 3.2 has no way to hand back two strings and two
+# integers from one function call without them.
+run_both() {
+	old_out=$("$OLD_CLI" "$@" 2>&1) && old_rc=0 || old_rc=$?
+	new_out=$("$NEW_CLI" "$@" 2>&1) && new_rc=0 || new_rc=$?
+}
+
+# compare_json diffs $old_out and $new_out as JSON after jq -S (key order is
+# not a difference) and an optional extra jq filter per side, applied AFTER
+# jq -S so a filter can assume sorted, parsed input. Prints PASS/FAIL and
+# returns non-zero on a real difference. A jq parse failure on either side
+# (an error message instead of a JSON body) is reported as a failure with
+# the raw output, not swallowed as "no diff".
+compare_json() {
+	local label=$1 old_filter=$2 new_filter=$3
+	local old_json new_json diff_out
+
+	if ! old_json=$(printf '%s' "$old_out" | normalize_time | jq -S "$old_filter" 2>&1); then
+		fail "$label" "old CLI's output did not parse as JSON:
+$old_out"
+		return 1
+	fi
+	if ! new_json=$(printf '%s' "$new_out" | normalize_time | jq -S "$new_filter" 2>&1); then
+		fail "$label" "new CLI's output did not parse as JSON:
+$new_out"
+		return 1
+	fi
+	if diff_out=$(diff <(printf '%s\n' "$old_json") <(printf '%s\n' "$new_json")); then
+		pass "$label"
+		return 0
+	fi
+	fail "$label" "$diff_out"
+	return 1
+}
+
+# require_no_token asserts neither CLI's output contains the API token -
+# every subcommand this script runs is read-only or --dry-run, and a token
+# leaking into either is a defect regardless of anything else this script
+# checks.
+require_no_token() {
+	local label=$1 token
+	token=$(jq -r '.apiToken // empty' "$HOME/.config/jira-cli/credentials.json" 2>/dev/null || true)
+	[[ -n "$token" ]] || return 0
+	if printf '%s%s' "$old_out" "$new_out" | grep -qF "$token"; then
+		fail "$label (token leak)" "the API token appeared in one CLI's output"
+		return 1
+	fi
+	return 0
+}
+
+note "verify-against-old-cli: discovering issue keys from the old CLI's own search"
+keys=$(discover_keys 5)
+if [[ -z "$keys" ]]; then
+	skip "get/search/comment list/transitions/users assignable" "old CLI's search returned no issues for the caller's account"
+	exit 0
+fi
+key1=$(printf '%s\n' "$keys" | sed -n '1p')
+
+# --- search: read-only, same JQL on both sides ---------------------------
+run_both search --jql "$DISCOVERY_JQL" -l 5 -f json
+# Known divergence: Issue (internal/jira) carries project.key but not
+# project.name, and Sprint carries id/name/state but not boardId/startDate/
+# endDate. Both were trimmed deliberately when the type moved from the root
+# package (see internal/jira/issue.go's own comment: "the subset ... this
+# dashboard renders") - the TUI never rendered the dropped fields, and this
+# CLI inherits that type rather than widening it. Dropped from OLD's side
+# only, since NEW simply never had them.
+compare_json "search -f json" \
+	'.results[].project |= {key} | .results[].sprint[] |= {id, name, state}' \
+	'.' || true
+require_no_token "search -f json" || true
+
+# --- get: read-only, one discovered key -----------------------------------
+run_both get "$key1" -f json
+# Known divergences, all pre-existing scope of internal/jira.Issue, not
+# something this task's diff can fix without widening that type (out of
+# scope - see cmd/jira/format.go's getOutput comment, written when Task 8
+# hit this same gap):
+#   - created / flagged / parent: old CLI's `get` prints them; Issue has no
+#     field for any of the three.
+#   - project.name, sprint's boardId/startDate/endDate: same trim as search.
+#   - description: old prints JSON null for "none"; new prints "" - both
+#     mean the same thing (see internal/jira.ParseIssueJSON, which already
+#     treats them as equivalent).
+# The other direction - sprint, story_points, url present in NEW's `get`
+# but absent from old's - is additive, not a compat break: nothing that
+# read old's `get` output could have depended on their absence.
+compare_json "get -f json" \
+	'del(.created, .flagged, .parent) | .project |= {key} | (.description // "") as $d | .description = $d' \
+	'del(.sprint, .story_points, .url) | .project |= {key} | (.description // "") as $d | .description = $d' || true
+require_no_token "get -f json" || true
+
+# --- comment list: read-only, same key. Neither CLI's `comment list`
+# accepts -f; the old one always prints JSON (see internal/jira's own
+# ParseCommentsJSON comment), and the new one matches. ----------------------
+run_both comment list "$key1"
+# Known divergence: old CLI's comment carries `updated` (it supported
+# `comment edit`); this migration dropped `comment edit`/`delete` from
+# scope (see the plan's 移行の範囲 table), so Comment (internal/jira) never
+# gained a field to report whether a comment was later edited.
+compare_json "comment list" \
+	'.comments[] |= del(.updated)' \
+	'.' || true
+require_no_token "comment list" || true
+
+# --- create --dry-run / edit --dry-run / comment add --dry-run -----------
+# Not diffed as JSON. The old CLI's --dry-run prints the literal wire
+# request body; this CLI's prints a human-readable preview of the same
+# intent instead (see cmd/jira/create_cmd.go's printCreateDryRun and
+# comment_cmd.go's runCommentAdd, both commented at the point of the
+# decision) - deliberately, since neither Client.Create nor Client.Edit
+# nor AddComment exposes its wire body for --dry-run to echo, and building
+# one only to throw it away before the real call was judged not worth a
+# second code path. A byte diff between "the JSON we would send" and "a
+# sentence describing what we would send" is not a meaningful comparison,
+# so this only asserts both sides succeed and neither leaks the token.
+project_key=$("$OLD_CLI" search --jql "$DISCOVERY_JQL" -l 1 -f json 2>/dev/null | jq -r '.results[0].project.key // empty')
+if [[ -n "$project_key" ]]; then
+	run_both create -p "$project_key" -t Task -s "verify-against-old-cli dry-run probe" --dry-run -f json
+	if [[ $old_rc -eq 0 && $new_rc -eq 0 ]]; then
+		pass "create --dry-run (both succeeded; output format intentionally differs, see comment above)"
+	else
+		fail "create --dry-run" "old_rc=$old_rc new_rc=$new_rc
+old: $old_out
+new: $new_out"
+	fi
+	require_no_token "create --dry-run" || true
+else
+	skip "create --dry-run" "could not discover a project key from the old CLI's search results"
+fi
+
+run_both edit "$key1" -s "verify-against-old-cli dry-run probe (no-op)" --dry-run -f json
+if [[ $old_rc -eq 0 && $new_rc -eq 0 ]]; then
+	pass "edit --dry-run (both succeeded; output format intentionally differs, see comment above)"
+else
+	fail "edit --dry-run" "old_rc=$old_rc new_rc=$new_rc
+old: $old_out
+new: $new_out"
+fi
+require_no_token "edit --dry-run" || true
+
+run_both comment add "$key1" -b "verify-against-old-cli dry-run probe" --dry-run
+if [[ $old_rc -eq 0 && $new_rc -eq 0 ]]; then
+	pass "comment add --dry-run (both succeeded; output format intentionally differs, see comment above)"
+else
+	fail "comment add --dry-run" "old_rc=$old_rc new_rc=$new_rc
+old: $old_out
+new: $new_out"
+fi
+require_no_token "comment add --dry-run" || true
+
+# --- transitions / users assignable: new-only, nothing to diff against ---
+note "verify-against-old-cli: transitions and users assignable have no old-CLI equivalent; asserting only that the new CLI succeeds with plausible output"
+
+if new_out=$("$NEW_CLI" transitions "$key1" -f json 2>&1); then
+	if printf '%s' "$new_out" | jq -e '.transitions | length > 0' >/dev/null 2>&1; then
+		pass "transitions -f json (new CLI only; nothing to compare against)"
+	else
+		fail "transitions -f json" "succeeded but returned no transitions:
+$new_out"
+	fi
+else
+	fail "transitions -f json" "$new_out"
+fi
+
+if new_out=$("$NEW_CLI" users assignable "$key1" -f json 2>&1); then
+	if printf '%s' "$new_out" | jq -e '.users | length > 0' >/dev/null 2>&1; then
+		pass "users assignable -f json (new CLI only; nothing to compare against)"
+	else
+		fail "users assignable -f json" "succeeded but returned no users:
+$new_out"
+	fi
+else
+	fail "users assignable -f json" "$new_out"
+fi
+
+if [[ $fail_count -gt 0 ]]; then
+	note "verify-against-old-cli: $fail_count check(s) failed, $skip_count skipped"
+	exit 1
+fi
+note "verify-against-old-cli: all checks passed, $skip_count skipped"
+exit 0
