@@ -348,7 +348,7 @@ func renderFooter(m Model) string {
 	}
 	if s.loading {
 		// The frame goes before the word: a static "refreshing" gave no sign the
-		// dashboard was alive through the CLI's 360ms of startup.
+		// dashboard was alive through the 0.5-1.2s Jira search call.
 		state += " · " + m.spinner.View() + " refreshing"
 	}
 	if m.status != "" {

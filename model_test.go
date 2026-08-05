@@ -487,8 +487,9 @@ func TestCreateIsCancelledByEsc(t *testing.T) {
 	}
 }
 
-// An empty summary is rejected locally rather than sent: `jira create` requires
-// -s, and the error would come back 360ms later as a CLI failure.
+// An empty summary is rejected locally rather than sent: Jira requires a
+// summary to create an issue, and the error would otherwise come back after
+// a Jira REST round trip as an API failure.
 func TestCreateRefusesAnEmptySummary(t *testing.T) {
 	var got []NewIssueRequest
 	m := createTestModel(t, &got)
@@ -705,8 +706,8 @@ func TestAskEscapeClosesThePrompt(t *testing.T) {
 }
 
 // The prompt carries the description because the preview already fetched it:
-// without it the receiving end spends another ~360ms on `jira get`, and may have
-// no credentials at all.
+// without it the receiving end spends another 0.5-1.2s Jira REST round trip,
+// and may have no credentials at all.
 func TestAskPromptCarriesTheIssueAndTheInstruction(t *testing.T) {
 	issue := Issue{Key: "ABC-1", Summary: "トークン更新で 500 が出る"}
 

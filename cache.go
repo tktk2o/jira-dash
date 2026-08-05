@@ -13,7 +13,8 @@ import (
 
 // issueTTL bounds how stale a detail pane can be. Sections refresh on every
 // launch, but a description is re-read often enough that re-fetching it on
-// each cursor pass would waste a 360ms CLI start for nothing.
+// each cursor pass would waste a real Jira REST round trip (0.5-1.2s) for
+// nothing.
 const issueTTL = 10 * time.Minute
 
 // cacheVersion namespaces every cached file. What is cached has a shape, and

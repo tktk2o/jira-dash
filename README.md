@@ -4,34 +4,40 @@
 見たい範囲を JQL でタブとして定義しておき、そこから参照・作成する。
 
 ```
- My Issues │ Deigo Sprint (15) │ Deigo Backlog │ AMED Backlog
-→ LIFF-9552  📘  LINEメッセージ配信基盤関係のリファクタリング   進行中   1h  ╭──────────────
-  LIFF-9529  🔧  管理画面のログイン機能全般の見直し             To Do    2h  │  ## LIFF-9552
+ My Issues │ Example Sprint (15) │ Example Backlog │ Other Backlog
+→ PROJ-123  📘  基盤のリファクタリング                          進行中   1h  ╭──────────────
+  PROJ-118  🔧  管理画面のログイン機能全般の見直し             To Do    2h  │  ## PROJ-123
 ```
 
 ## 前提
 
-- **`jira` CLI が PATH にあること**（ax-toolkit の `tools/jira-cli`）。検索・詳細取得・
-  作成はすべてこの CLI 経由で、jira-dash 自身は Jira API を直接叩かない。認証も CLI 側
-  （`jira auth login`）に任せているので、認証情報ストアはひとつだけ
-- Go（ビルド時のみ）
+- Go（ビルド時のみ）。jira-dash 自身が Jira API を直接叩くので、外部の CLI は不要
+- `~/.config/jira-cli/credentials.json`（または `JIRA_*` 環境変数）に認証情報が
+  あること。これは `jira auth login`（本リポジトリの `cmd/jira`）が書き込む
 - macOS 前提（`y`/`Y` のクリップボードが `pbcopy`）
 
 ## インストール
 
+TUI 本体と、それが使う認証・キーバインドの両方が呼ぶ CLI の、2つのバイナリをビルドする。
+
 ```bash
 go build -o ~/.local/bin/jira-dash .
+go build -o ~/.local/bin/jira ./cmd/jira
 
 # 短縮名。シェルのエイリアスにしないのは、dotfiles の .zshrc が公開リポジトリで
-# 追跡されており、そこに書くと ax-toolkit が無い機種にも存在しないコマンドが
-# 載ってしまうため。リンクなら PATH の話だけで済む。
+# 追跡されているため。リンクなら PATH の話だけで済む。
 ln -s jira-dash ~/.local/bin/jhd
+
+jira auth login
 
 cp config.yml.example config.local.yml
 $EDITOR config.local.yml
 mkdir -p ~/.config/jira-dash
 ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 ```
+
+`scripts/verify-against-old-cli` は、この Go 版 CLI を移行前の TypeScript 版 CLI と
+出力差分で比較するスクリプト。旧 CLI がまだ端末に入っている間しか使えない。
 
 設定は `--config <path>` か `JIRA_DASH_CONFIG` でも指定できる（どちらも先頭の `~` を
 自前で展開する）。`config.local.yml` は `.gitignore` 済み — JQL がプロジェクトキーや
@@ -172,12 +178,13 @@ ln -s "$PWD/scripts/jhd-claude-split" ~/.local/bin/jhd-claude-split
 ```
 
 本文を同梱するのは、プレビューが**すでに取得済み**だから。渡さないと受け手が
-`jira get` にもう一度 ~360ms 払うことになり、そもそも認証情報を持っていない
-かもしれない。本文が空、または本プログラム自身の言葉である `*no description*`
-のときは何も入れない（「説明が無い」という話を Claude にさせないため）。
+Jira REST に 0.5〜1.2s かけてもう一度取りに行くことになり、そもそも認証情報を
+持っていないかもしれない。本文が空、または本プログラム自身の言葉である
+`*no description*` のときは何も入れない（「説明が無い」という話を Claude に
+させないため）。
 
 制約: 本文はプレビューの取得が終わっていないと入らない（デバウンス 150ms ＋
-CLI 起動 ~360ms）。カーソルを置いた直後に押すとタイトルと指示だけになる。
+Jira REST の応答待ち）。カーソルを置いた直後に押すとタイトルと指示だけになる。
 
 `prompt: true` の無いキーは今までどおり即実行する — ブラウザで開くような固定の
 コマンドにはそちらが正しい形。
@@ -202,7 +209,8 @@ Jira を書き換えるのは作成だけで、それ以外は設定のコマン
 待って見るためのリロードではない。無いと投稿した
 コメントは、カーソルが行を離れて戻ってくるまで出てこない — それは投稿に失敗したのと
 見分けがつかない。既定で off なのは、jhd 側からは「書き込むコマンド」と「ブラウザを
-開くコマンド」の区別がつかず、無駄な取り直しは `jira` 呼び出し2回 ＝ 約 720ms だから。
+開くコマンド」の区別がつかず、無駄な取り直しは Jira REST の呼び出し2回（約 1〜2.4s）
+だから。
 
 `{{.Prompt}}` で書くとタイトルと本文までコメントとして Jira に載る。投稿系は
 `{{.Input}}`。
@@ -302,14 +310,17 @@ create:
 
 ## 設計上の判断
 
-- **CLI をバックエンドにした理由**: 認証情報ストアを2つ持ちたくない。既存の
-  `jira` CLI が `~/.config/jira-cli/credentials.json` を持っているので、REST を直接
-  叩くならそれを読むことになる。将来やるなら `Searcher` インターフェースを差し替える
-  だけで済むようにしてある
-- **キャッシュ前提**: `jira` は tsx 起動に 361.7ms ± 34.9 を毎回払う（実測）。
-  セクションはまずキャッシュから描画し、裏で更新する。キャッシュは
-  `~/.cache/jira-dash/`、キーは**タイトルではなくクエリ**なので、タブ名を変えても
-  キャッシュは生き、JQL を変えれば自然に別キーになる
+- **認証情報ストアはひとつ**: jira-dash は `internal/jira` で Jira REST API を直接
+  in-process で叩くが、認証情報は `~/.config/jira-cli/credentials.json`（または
+  `JIRA_*` 環境変数）を本リポジトリの `cmd/jira`（`jira auth login`）と共有する。
+  もともと外部の TypeScript 製 `jira` CLI に検索・詳細取得・作成を経由させていたのも
+  同じ理由（ストアを2つ持ちたくない）だったが、そちらは Go 版の自前 CLI 兼 API クラ
+  イアントに置き換わっている。`Searcher` インターフェースは差し替えられるようにして
+  ある
+- **キャッシュ前提**: Jira REST の1回の呼び出しは、Jira 側のサーバレイテンシが支配的
+  で 0.5〜1.2s かかる（実測）。セクションはまずキャッシュから描画し、裏で更新する。
+  キャッシュは `~/.cache/jira-dash/`、キーは**タイトルではなくクエリ**なので、タブ名
+  を変えてもキャッシュは生き、JQL を変えれば自然に別キーになる
 - **`sprintPrefix`**: ボードが複数チームのスプリントを同時に走らせていると JQL では
   分けられない（`sprint` に LIKE 相当が無く、`sprint ~ "Team"` は15件中2件しか返さな
   かった）。かつ active スプリントは毎イテレーション改名されるので、名前の完全一致も

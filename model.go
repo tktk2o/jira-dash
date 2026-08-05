@@ -724,9 +724,10 @@ func (m *Model) closeChoosePrompt() {
 
 // AskPrompt assembles what the configured command receives as {{.Prompt}}: the
 // issue, then the instruction. The description is included because the preview
-// already fetched it - without it the receiving end has to spend another ~360ms
-// on `jira get` to learn what the issue says, and it may not have credentials at
-// all. An empty body is simply left out rather than announced.
+// already fetched it - without it the receiving end has to spend another
+// 0.5-1.2s Jira REST round trip to learn what the issue says, and it may not
+// have credentials at all. An empty body is simply left out rather than
+// announced.
 func AskPrompt(i Issue, body, instruction string) string {
 	parts := []string{i.Key + " " + i.Summary}
 	if b := strings.TrimSpace(body); b != "" && b != "*no description*" {
@@ -752,8 +753,9 @@ func (m Model) openCreatePrompt(issueType string) (tea.Model, tea.Cmd) {
 func (m Model) handleCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlD:
-		// `jira create` requires -s, so an empty summary is refused here rather
-		// than coming back as a CLI failure 360ms later. The box stays open.
+		// Jira requires a summary to create an issue, so an empty one is refused
+		// here rather than coming back as an API failure after a round trip. The
+		// box stays open.
 		summary := strings.TrimSpace(m.prompt.Value())
 		if summary == "" {
 			return m, nil

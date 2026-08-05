@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Moving the cursor must not fire a fetch per keystroke: each jira call costs
-// ~360ms, so the fetch waits for the cursor to settle.
+// Moving the cursor must not fire a fetch per keystroke: a Jira REST call
+// costs 0.5-1.2s, so the fetch waits for the cursor to settle.
 func TestSelectionChangedDebouncesRatherThanFetching(t *testing.T) {
 	m := newTestModel(t, fakeSearcher{})
 	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: time.Now()})
@@ -55,7 +55,7 @@ func TestCurrentDebounceTickLoadsTheIssue(t *testing.T) {
 	}
 
 	// The tick fires both halves of the pane: the body and the comments are
-	// separate CLI subcommands.
+	// separate API calls.
 	batch, ok := cmd().(tea.BatchMsg)
 	if !ok {
 		t.Fatalf("got %T, want a batch of the two loads", cmd())
@@ -89,7 +89,7 @@ func TestCurrentDebounceTickLoadsTheIssue(t *testing.T) {
 	}
 }
 
-// The second visit to an issue should come from cache, not the CLI.
+// The second visit to an issue should come from cache, not a fresh API call.
 func TestLoadIssueUsesTheCache(t *testing.T) {
 	cache := NewCache(t.TempDir())
 	if err := cache.WriteIssue("ABC-1", "# cached body\n"); err != nil {

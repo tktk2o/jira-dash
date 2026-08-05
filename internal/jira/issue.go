@@ -51,8 +51,9 @@ func (t JiraTime) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.Time)
 }
 
-// Issue is the subset of `jira search -f json` this dashboard renders. URL
-// comes from the CLI, so no site URL has to be configured here.
+// Issue is the subset of `jira search -f json` this dashboard renders. URL is
+// built from Credentials.SiteURL by the client (see read.go), so no site URL
+// has to be configured here.
 type Issue struct {
 	Key      string   `json:"key"`
 	Summary  string   `json:"summary"`
@@ -157,8 +158,9 @@ func ParseSearchJSON(b []byte) ([]Issue, error) {
 }
 
 // Comment is one entry from `jira comment list`. It is a separate call from the
-// issue itself - another ~360ms - which is why the preview draws its header and
-// body first and folds comments in when they arrive.
+// issue itself - another 0.5-1.2s Jira REST round trip - which is why the
+// preview draws its header and body first and folds comments in when they
+// arrive.
 type Comment struct {
 	ID      string   `json:"id"`
 	Author  string   `json:"author"`

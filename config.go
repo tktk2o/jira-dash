@@ -110,7 +110,7 @@ type Keybinding struct {
 	// that changed the issue - a posted comment is otherwise invisible until the
 	// cursor leaves the row and comes back. Opt-in because the dashboard cannot
 	// tell a command that writes from one that opens a browser, and a needless
-	// reload costs two ~360ms jira calls.
+	// reload costs two real Jira REST round trips (0.5-1.2s each).
 	Refresh bool `yaml:"refresh"`
 }
 

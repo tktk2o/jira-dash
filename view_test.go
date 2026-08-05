@@ -273,7 +273,7 @@ func TestCreateBoxIsFramedAndFitsTheScreen(t *testing.T) {
 }
 
 // "refreshing" as a static word gave no sign the dashboard was alive while the
-// CLI spent its 360ms of startup. The footer carries the animated frame.
+// section's search call was in flight. The footer carries the animated frame.
 func TestFooterShowsTheSpinnerWhileTheSectionLoads(t *testing.T) {
 	m := settled(newTestModel(t, fakeSearcher{}))
 	m.sections[0].loading = true
