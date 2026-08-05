@@ -172,7 +172,7 @@ func runCreate(ctx context.Context, client jiraClient, args []string, stdout io.
 			// happened" and "go finish this by hand".
 			return fmt.Errorf("created %s, but applying the remaining fields failed: %w", issue.Key, err)
 		}
-		if refreshed, err := client.Issue(ctx, issue.Key); err == nil {
+		if refreshed, _, err := client.IssueWithDescription(ctx, issue.Key); err == nil {
 			issue = refreshed
 		}
 	}

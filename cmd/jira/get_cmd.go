@@ -35,11 +35,7 @@ func runGet(ctx context.Context, client jiraClient, args []string, stdout io.Wri
 	}
 	key := positionals[0]
 
-	issue, err := client.Issue(ctx, key)
-	if err != nil {
-		return err
-	}
-	description, err := client.IssueDescription(ctx, key)
+	issue, description, err := client.IssueWithDescription(ctx, key)
 	if err != nil {
 		return err
 	}

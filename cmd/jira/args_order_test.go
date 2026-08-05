@@ -30,7 +30,7 @@ func TestSubcommandsAcceptFlagsBeforeOrAfterThePositional(t *testing.T) {
 			run: func(fc *fakeClient, args []string) error {
 				return runGet(context.Background(), fc, args, &bytes.Buffer{})
 			},
-			wantCall: "Issue",
+			wantCall: "IssueWithDescription",
 		},
 		{
 			name: "search", beforeArgs: []string{"-l", "5"}, key: "payment bug",

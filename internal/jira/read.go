@@ -172,19 +172,33 @@ func requestedFields(fieldIDs FieldIDs) []string {
 // since Issue's JSON shape is the one the TUI and `-f json` both already
 // depend on and this task does not touch it.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
+	issue, _, err := c.IssueWithDescription(ctx, key)
+	return issue, err
+}
+
+// IssueWithDescription fetches the fields and the description in ONE request.
+// The two used to be separate calls, and `jira get` made both: measured at
+// 2.2s against the old CLI's 0.8s for the same issue, because a second round
+// trip costs more than the whole TypeScript startup this migration removed.
+// Anything that wants both must come through here.
+func (c *Client) IssueWithDescription(ctx context.Context, key string) (Issue, string, error) {
 	fieldIDs, err := c.FieldIDs(ctx)
 	if err != nil {
-		return Issue{}, err
+		return Issue{}, "", err
 	}
-	q := "?fields=" + strings.Join(requestedFields(fieldIDs), ",")
+	q := "?fields=" + strings.Join(append(requestedFields(fieldIDs), "description"), ",")
 	var raw rawIssue
 	if err := c.do(ctx, http.MethodGet, "/issue/"+key+q, nil, &raw); err != nil {
-		return Issue{}, err
+		return Issue{}, "", err
 	}
 	if raw.Key == "" {
 		raw.Key = key
 	}
-	return raw.toIssue(fieldIDs, c.creds.SiteURL), nil
+	description, err := raw.issueDescriptionMarkdown()
+	if err != nil {
+		return Issue{}, "", err
+	}
+	return raw.toIssue(fieldIDs, c.creds.SiteURL), description, nil
 }
 
 // IssueDescription fetches one issue and returns only its description,

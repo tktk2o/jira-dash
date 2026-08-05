@@ -13,8 +13,10 @@ import (
 // test can hand in a fake and never touch the network, per the migration
 // plan's ban on network calls from tests.
 type jiraClient interface {
-	Issue(ctx context.Context, key string) (jirapkg.Issue, error)
-	IssueDescription(ctx context.Context, key string) (string, error)
+	// IssueWithDescription rather than a fields call plus a description call:
+	// `get` needs both, and two round trips measured slower than the whole
+	// TypeScript startup this CLI replaced.
+	IssueWithDescription(ctx context.Context, key string) (jirapkg.Issue, string, error)
 	Search(ctx context.Context, jql string, limit int) ([]jirapkg.Issue, error)
 	Comments(ctx context.Context, key string, max int) ([]jirapkg.Comment, error)
 	AddComment(ctx context.Context, key, bodyMarkdown string) (jirapkg.Comment, error)

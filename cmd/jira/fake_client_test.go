@@ -45,14 +45,14 @@ type fakeClient struct {
 	lastTransitionTo  string
 }
 
-func (f *fakeClient) Issue(ctx context.Context, key string) (jirapkg.Issue, error) {
-	f.calls = append(f.calls, "Issue")
-	return f.issue, f.issueErr
-}
-
-func (f *fakeClient) IssueDescription(ctx context.Context, key string) (string, error) {
-	f.calls = append(f.calls, "IssueDescription")
-	return f.description, f.descriptionErr
+func (f *fakeClient) IssueWithDescription(
+	ctx context.Context, key string,
+) (jirapkg.Issue, string, error) {
+	f.calls = append(f.calls, "IssueWithDescription")
+	if f.issueErr != nil {
+		return jirapkg.Issue{}, "", f.issueErr
+	}
+	return f.issue, f.description, f.descriptionErr
 }
 
 func (f *fakeClient) Search(ctx context.Context, jql string, limit int) ([]jirapkg.Issue, error) {
