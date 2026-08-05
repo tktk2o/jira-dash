@@ -75,7 +75,7 @@ func run(configFlag, section string) error {
 	}
 
 	cache := NewCache(filepath.Join(home, ".cache", "jira-dash"))
-	searcher := Adapter{Client: jirapkg.NewClient(creds), SiteURL: creds.SiteURL}
+	searcher := Adapter{Client: jirapkg.NewClient(creds)}
 	model := NewModel(cfg, searcher, cache, time.Now)
 	model.active = start
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
 
 	jirapkg "jira-dash/internal/jira"
 )
@@ -60,34 +59,11 @@ const commentsMax = 50
 // to this program's UI, so the mapping lives here instead.
 type Adapter struct {
 	Client *jirapkg.Client
-
-	// SiteURL fills Issue.URL, which the REST API never returns (the old CLI
-	// built it for us). Kept here rather than in internal/jira because
-	// Client exposes no accessor for the credentials it holds, and every
-	// call this adapter makes already knows the key "/browse/<key>" needs.
-	SiteURL string
-}
-
-// withURL fills in Issue.URL when the API left it empty, so keybind.go's
-// open-in-browser and model.go's copy-URL keep working now that nothing
-// downstream of Client ever sets it.
-func (a Adapter) withURL(i jirapkg.Issue) Issue {
-	if i.URL == "" && i.Key != "" {
-		i.URL = strings.TrimSuffix(a.SiteURL, "/") + "/browse/" + i.Key
-	}
-	return i
 }
 
 // Search runs a section's JQL.
 func (a Adapter) Search(ctx context.Context, jql string, limit int) ([]Issue, error) {
-	issues, err := a.Client.Search(ctx, jql, limit)
-	if err != nil {
-		return nil, err
-	}
-	for i := range issues {
-		issues[i] = a.withURL(issues[i])
-	}
-	return issues, nil
+	return a.Client.Search(ctx, jql, limit)
 }
 
 // Issue returns the body of the preview: the description, and nothing else.
@@ -104,14 +80,10 @@ func (a Adapter) Comments(ctx context.Context, key string) ([]Comment, error) {
 
 // Create files a new issue. It is the one call in this program that writes.
 func (a Adapter) Create(ctx context.Context, req NewIssueRequest) (Issue, error) {
-	issue, err := a.Client.Create(ctx, jirapkg.NewIssue{
+	return a.Client.Create(ctx, jirapkg.NewIssue{
 		ProjectKey: req.Project,
 		Type:       req.Type,
 		Summary:    req.Summary,
 		Sprint:     req.Sprint,
 	})
-	if err != nil {
-		return Issue{}, err
-	}
-	return a.withURL(issue), nil
 }

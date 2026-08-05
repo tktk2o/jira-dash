@@ -257,3 +257,27 @@ func TestClientSearchStopsWhenNoTokenIsOffered(t *testing.T) {
 		t.Fatalf("len(got) = %d, want 1", len(got))
 	}
 }
+
+// Issue.URL is what keybind.go's open-in-browser and the dashboard's copy-URL
+// key read, and the REST API never returns it - the old CLI built the link
+// itself. Nothing filled it in for a while: the differential check against the old
+// CLI is what caught every issue coming back with url:"".
+func TestIssueURLIsBuiltFromTheSiteURL(t *testing.T) {
+	for name, siteURL := range map[string]string{
+		"plain":          "https://example.atlassian.net",
+		"trailing slash": "https://example.atlassian.net/",
+	} {
+		got := rawIssue{Key: "ABC-1"}.toIssue(FieldIDs{}, siteURL)
+		if want := "https://example.atlassian.net/browse/ABC-1"; got.URL != want {
+			t.Errorf("%s: url = %q, want %q", name, got.URL, want)
+		}
+	}
+}
+
+// A site URL we do not have must leave the field empty rather than produce a
+// "/browse/KEY" that looks like a link and resolves to nothing.
+func TestIssueURLStaysEmptyWithoutASiteURL(t *testing.T) {
+	if got := (rawIssue{Key: "ABC-1"}).toIssue(FieldIDs{}, ""); got.URL != "" {
+		t.Errorf("url = %q, want empty", got.URL)
+	}
+}

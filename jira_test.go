@@ -124,25 +124,3 @@ func TestCurrentSprintPrefersActiveThenFuture(t *testing.T) {
 		}
 	}
 }
-
-// Adapter.withURL must fill Issue.URL from the site URL when the API left it
-// empty - the REST responses Client returns never carry it, unlike the old
-// CLI's own JSON, and keybind.go's open-in-browser has nothing else to read.
-func TestAdapterFillsInTheIssueURLWhenTheAPILeftItEmpty(t *testing.T) {
-	a := Adapter{SiteURL: "https://example.atlassian.net/"}
-	got := a.withURL(Issue{Key: "ABC-1"})
-	want := "https://example.atlassian.net/browse/ABC-1"
-	if got.URL != want {
-		t.Errorf("url = %q, want %q", got.URL, want)
-	}
-}
-
-// A URL the API did supply must not be overwritten - withURL only fills a gap,
-// it does not second-guess Jira.
-func TestAdapterLeavesAnExistingURLAlone(t *testing.T) {
-	a := Adapter{SiteURL: "https://example.atlassian.net"}
-	got := a.withURL(Issue{Key: "ABC-1", URL: "https://other.example.com/browse/ABC-1"})
-	if got.URL != "https://other.example.com/browse/ABC-1" {
-		t.Errorf("url = %q, want the original left untouched", got.URL)
-	}
-}

@@ -97,7 +97,10 @@ func (r rawIssue) toIssue(fieldIDs FieldIDs, siteURL string) Issue {
 	var issue Issue
 	issue.Key = r.Key
 	if siteURL != "" {
-		issue.URL = siteURL + "/browse/" + r.Key
+		// TrimSuffix because the credentials file is hand-editable and a site URL
+		// written with a trailing slash would otherwise produce "…//browse/KEY",
+		// which some browsers follow and some do not.
+		issue.URL = strings.TrimSuffix(siteURL, "/") + "/browse/" + r.Key
 	}
 	issue.Summary = r.Fields.Summary
 	if r.Fields.Status != nil {
