@@ -19,15 +19,16 @@
 
 ## インストール
 
-TUI 本体と、それが使う認証・キーバインドの両方が呼ぶ CLI の、2つのバイナリをビルドする。
+TUI 本体と、それが使う認証・キーバインドの両方が呼ぶ CLI の、2つのバイナリがある。
+どちらも直接 PATH に置かず、`scripts/jd` への symlink を置く。`jd` は起動時に
+ソースが新しければビルドしてから exec するので、**ビルドを手で打つ手順はない**
+（理由と実測は [docs/adr/0012](docs/adr/0012-rebuild-on-launch.md)）。
 
 ```bash
-go build -o ~/.local/bin/jira-dash .
-go build -o ~/.local/bin/jira ./cmd/jira
-
-# 短縮名。シェルのエイリアスにしないのは、dotfiles の .zshrc が公開リポジトリで
-# 追跡されているため。リンクなら PATH の話だけで済む。
-ln -s jira-dash ~/.local/bin/jhd
+# 起動名でどちらのバイナリかが決まる。シェルのエイリアスにしないのは、dotfiles の
+# .zshrc が公開リポジトリで追跡されているため。リンクなら PATH の話だけで済む。
+ln -s "$PWD/scripts/jd" ~/.local/bin/jhd
+ln -s "$PWD/scripts/jd" ~/.local/bin/jira
 
 jira auth login
 
@@ -36,6 +37,10 @@ $EDITOR config.local.yml
 mkdir -p ~/.config/jira-dash
 ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 ```
+
+ビルドは `.bin/` に置かれる（`.gitignore` 済み）。`JD_NO_AUTOBUILD=1` を付けると
+ビルドを一切せず現在の `.bin/` をそのまま実行する — 計測や、ソースを弄っている最中に
+安定版で作業したい時に使う。
 
 `scripts/verify-against-old-cli` は、この Go 版 CLI を移行前の TypeScript 版 CLI と
 出力差分で比較するスクリプト。旧 CLI がまだ端末に入っている間しか使えない

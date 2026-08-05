@@ -1,0 +1,76 @@
+#!/bin/bash
+#
+# Launcher for both binaries in this repo, rebuilding first when the source has
+# moved on. ~/.local/bin/jhd and ~/.local/bin/jira are symlinks to this file,
+# and the name it was invoked under picks which binary to run:
+#
+#   jhd, jira-dash -> the TUI      (package .)
+#   jira           -> the CLI      (package ./cmd/jira)
+#
+# Why a guard rather than a watcher or a git hook: an editing session ran a
+# binary built 32 minutes before HEAD for a while, and every symptom it
+# produced looked like a fresh bug - a flicker that had already been fixed, a
+# comment that "maybe failed" because the fix that surfaces stderr was not in
+# the binary either. A file watcher would have to be babysat as a daemon and
+# rebuilds on every save, including the broken intermediate ones; a git hook
+# covers commits but not the uncommitted edit you are testing right now.
+#
+# Measured on this repo: 0.38-0.41s to relink when nothing changed, 1.04s after
+# a real edit, and ~10ms for the staleness check that skips both. So the check
+# is free on the common path and the rebuild only costs when it is doing work.
+set -e
+
+# This script is reached through a symlink on PATH, so $0 is that symlink;
+# realpath resolves it back into the repo and locates the source tree. Nothing
+# here hardcodes a checkout path.
+self=$(cd "$(dirname "$(realpath "$0")")" && pwd)
+src=$(dirname "$self")
+bindir="$src/.bin"
+
+case "$(basename "$0")" in
+    jira) name=jira; pkg=./cmd/jira ;;
+    jhd | jira-dash) name=jira-dash; pkg=. ;;
+    *)
+        echo "jd: invoked as '$(basename "$0")'; expected jhd, jira-dash or jira" >&2
+        exit 2
+        ;;
+esac
+bin="$bindir/$name"
+
+# stale prints something when the binary needs rebuilding: missing, or older
+# than any Go source / module file. -print -quit stops at the first hit rather
+# than walking the whole tree. .bin and .git are skipped so the binary we just
+# wrote cannot make itself look stale.
+stale() {
+    [ -x "$bin" ] || { echo missing; return; }
+    find "$src" \
+        \( -name .git -o -name .bin -o -name .worktrees \) -prune -o \
+        \( -name '*.go' -o -name go.mod -o -name go.sum \) -newer "$bin" \
+        -print -quit
+}
+
+if [ -z "$JD_NO_AUTOBUILD" ] && [ -n "$(stale)" ]; then
+    mkdir -p "$bindir"
+    # A build failure must not leave you without a working tool: the previous
+    # binary still runs, loudly announced. Silently running stale code is the
+    # exact failure this script exists to prevent, so the warning is not
+    # optional even though the run continues.
+    if ! (cd "$src" && go build -o "$bin" "$pkg"); then
+        if [ -x "$bin" ]; then
+            echo "jd: build failed - running the PREVIOUS $name binary ($(date -r "$bin" '+%F %T'))" >&2
+        else
+            echo "jd: build failed and no $name binary exists yet" >&2
+            exit 1
+        fi
+    fi
+fi
+
+# Only reachable with the kill switch set on a checkout that has never been
+# built: exec would otherwise fail with a bare "No such file or directory"
+# naming a path inside .bin, which explains nothing.
+if [ ! -x "$bin" ]; then
+    echo "jd: no $name binary at $bin, and JD_NO_AUTOBUILD is set - unset it or run: (cd $src && go build -o $bin $pkg)" >&2
+    exit 1
+fi
+
+exec "$bin" "$@"

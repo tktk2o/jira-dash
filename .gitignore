@@ -1,5 +1,10 @@
-# The live config names project keys; this is a public repo.
+# The live config names project keys, sprint names and a board URL. The remote
+# is private, but this stays untracked regardless: it is per-machine state, and
+# config.yml.example is the shape to copy from.
 config.local.yml
+
+# Where scripts/jd puts the binaries it builds.
+/.bin/
 
 # `go build` with no -o drops the binary here, named after the package.
 /jira-dash

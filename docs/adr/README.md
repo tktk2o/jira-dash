@@ -10,3 +10,5 @@
 - [0008. `jhd-claude-split` はスクリプトで、ペインは最大2枚まで](0008-claude-pane-budget.md)
 - [0009. `{{.Prompt}}` と `{{.Input}}` を分ける](0009-prompt-versus-input.md)
 - [0010. `choicesFrom` を3つのソースに分ける](0010-picker-choice-sources.md)
+- [0011. 設定されたコマンドに端末を渡さない](0011-commands-do-not-get-the-terminal.md)
+- [0012. バイナリは起動時に作り直す](0012-rebuild-on-launch.md)
