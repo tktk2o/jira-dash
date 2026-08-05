@@ -11,9 +11,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fetchConcurrency bounds how many jira processes run at once. Each costs
-// ~360ms of startup, so some parallelism is essential, but a tab per core is
-// enough - the dashboard should not look like a load test.
+// fetchConcurrency bounds how many section fetches run at once. The exec
+// startup that used to make parallelism essential is gone, but Jira is a
+// shared API on the other end of these calls, and a tab per core is enough -
+// the dashboard should not look like a load test.
 const fetchConcurrency = 4
 
 // fetchTimeout stops a hung call from leaving a section spinning forever.
@@ -660,7 +661,7 @@ func (m Model) handleCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Summary: summary,
 		}
 		if sprint, ok := row.CurrentSprint(); ok {
-			req.SprintID = sprint.ID
+			req.Sprint = sprint.Name
 		}
 
 		m.closePrompt()

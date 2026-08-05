@@ -1,169 +1,65 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"os"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestParseSearchJSON(t *testing.T) {
-	raw, err := os.ReadFile("testdata/search.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+// Adapter must satisfy Searcher, so the model can take a fake in tests and
+// the real thing at runtime without either knowing about the other.
+var _ Searcher = Adapter{}
 
-	issues, err := ParseSearchJSON(raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(issues) != 2 {
-		t.Fatalf("got %d issues, want 2", len(issues))
-	}
-
-	first := issues[0]
-	if first.Key != "ABC-1234" {
-		t.Errorf("key = %q", first.Key)
-	}
-	if first.Type != "Bug" {
-		t.Errorf("type = %q", first.Type)
-	}
-	if first.Status != "In Progress" {
-		t.Errorf("status = %q", first.Status)
-	}
-	if first.Project.Key != "ABC" {
-		t.Errorf("project key = %q", first.Project.Key)
-	}
-	if first.URL == "" {
-		t.Error("url should come straight from the CLI, not be assembled")
-	}
-	if first.AssigneeName() != "Alice Example" {
-		t.Errorf("assignee = %q", first.AssigneeName())
-	}
-	if issues[1].AssigneeName() != "-" {
-		t.Errorf("a null assignee should render as -, got %q", issues[1].AssigneeName())
-	}
-}
-
-// Jira returns "+0900" with no colon, which time.RFC3339 rejects.
+// Jira returns "+0900" with no colon, which time.RFC3339 rejects. internal/jira
+// has no test of its own for this - JiraTime only gets exercised there through
+// full REST response fixtures - so it stays here, against the alias.
 func TestJiraTimeAcceptsJiraOffset(t *testing.T) {
-	issues, err := ParseSearchJSON([]byte(
-		`{"results":[{"key":"ABC-1","updated":"2026-08-04T10:15:00.000+0900"}]}`))
-	if err != nil {
+	var issue Issue
+	if err := json.Unmarshal([]byte(
+		`{"key":"ABC-1","updated":"2026-08-04T10:15:00.000+0900"}`), &issue); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	want := time.Date(2026, 8, 4, 10, 15, 0, 0, time.FixedZone("", 9*60*60))
-	if !issues[0].Updated.Equal(want) {
-		t.Errorf("updated = %v, want %v", issues[0].Updated.Time, want)
+	if !issue.Updated.Equal(want) {
+		t.Errorf("updated = %v, want %v", issue.Updated.Time, want)
 	}
 }
 
 func TestJiraTimeAcceptsNull(t *testing.T) {
-	issues, err := ParseSearchJSON([]byte(`{"results":[{"key":"ABC-1","updated":null}]}`))
-	if err != nil {
+	var issue Issue
+	if err := json.Unmarshal([]byte(`{"key":"ABC-1","updated":null}`), &issue); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !issues[0].Updated.IsZero() {
+	if !issue.Updated.IsZero() {
 		t.Error("a null updated should stay the zero time")
 	}
 }
 
-func TestParseSearchJSONRejectsGarbage(t *testing.T) {
-	if _, err := ParseSearchJSON([]byte("not json")); err == nil {
-		t.Fatal("want an error")
+// Jira returns null for a time it does not have, and the four-character string
+// "null" is a different thing - only the JSON decoder can tell them apart.
+func TestJiraTimeAcceptsNullAndRejectsNonsense(t *testing.T) {
+	var payload struct {
+		Updated JiraTime `json:"updated"`
+	}
+	if err := json.Unmarshal([]byte(`{"updated":null}`), &payload); err != nil {
+		t.Fatalf("a null time should unmarshal as absent: %v", err)
+	}
+	if !payload.Updated.IsZero() {
+		t.Error("a null time should be the zero time")
+	}
+	if err := json.Unmarshal([]byte(`{"updated":"not a time"}`), &payload); err == nil {
+		t.Error("an unparseable time should be an error, not the zero time")
+	}
+	if err := json.Unmarshal([]byte(`{"updated":12345}`), &payload); err == nil {
+		t.Error("a number should be an error, not a time")
 	}
 }
-
-func TestCLISearchParsesStubOutput(t *testing.T) {
-	cli := CLI{Bin: "./testdata/fake-jira-ok.sh"}
-
-	issues, err := cli.Search(context.Background(), "assignee = currentUser()", 20)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(issues) != 2 {
-		t.Fatalf("got %d issues, want 2", len(issues))
-	}
-}
-
-func TestCLIIssueReturnsMarkdown(t *testing.T) {
-	cli := CLI{Bin: "./testdata/fake-jira-ok.sh"}
-
-	md, err := cli.Issue(context.Background(), "ABC-1234")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(md, "ABC-1234") {
-		t.Errorf("markdown should mention the key, got %q", md)
-	}
-}
-
-// A failed call must surface one readable line, not a wall of stderr.
-func TestCLISearchReportsFirstStderrLine(t *testing.T) {
-	cli := CLI{Bin: "./testdata/fake-jira-fail.sh"}
-
-	_, err := cli.Search(context.Background(), "project = ABC", 20)
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	if !strings.Contains(err.Error(), "authentication failed") {
-		t.Errorf("error should carry the first stderr line, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "second line") {
-		t.Errorf("error should stop at the first line, got: %v", err)
-	}
-}
-
-func TestCLISearchIsCancellable(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if _, err := (CLI{Bin: "./testdata/fake-jira-ok.sh"}).Search(ctx, "project = ABC", 1); err == nil {
-		t.Fatal("a cancelled context must fail the call")
-	}
-}
-
-// CLI must satisfy Searcher, so the model can take a fake in tests.
-var _ Searcher = CLI{}
 
 // A rotating sprint name ("Team 0803-0807") cannot be matched in JQL: the
 // sprint field takes no LIKE operator, and `sprint ~ "Team"` was measured
 // returning 2 of the sprint's 15 issues. The prefix match therefore happens
-// here, which needs the sprint names and states out of the search JSON.
-func TestParseSearchJSONKeepsSprintNamesAndStates(t *testing.T) {
-	issues, err := ParseSearchJSON([]byte(`{"total":1,"results":[{
-		"key":"ABC-1",
-		"sprint":[
-			{"name":"Team 0721-0724","state":"closed"},
-			{"name":"Team 0803-0807","state":"active"}
-		]}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := issues[0].Sprint
-	if len(got) != 2 {
-		t.Fatalf("sprints = %d, want 2", len(got))
-	}
-	if got[1].Name != "Team 0803-0807" || got[1].State != "active" {
-		t.Errorf("second sprint = %+v", got[1])
-	}
-}
-
-// An issue with no sprint must parse, not fail: most projects do not use them.
-func TestParseSearchJSONAcceptsAMissingSprint(t *testing.T) {
-	issues, err := ParseSearchJSON([]byte(`{"total":1,"results":[{"key":"ABC-1"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(issues[0].Sprint) != 0 {
-		t.Errorf("sprints = %+v, want none", issues[0].Sprint)
-	}
-}
-
+// here, against the row's own sprint list.
 func TestInActiveSprintPrefix(t *testing.T) {
 	inSprint := Issue{Sprint: []Sprint{
 		{Name: "Team 0727-0731", State: "closed"},
@@ -229,199 +125,24 @@ func TestCurrentSprintPrefersActiveThenFuture(t *testing.T) {
 	}
 }
 
-// The sprint id comes straight from the search results, so create never pays
-// the CLI's name-to-id lookup.
-func TestParseSearchJSONKeepsTheSprintID(t *testing.T) {
-	issues, err := ParseSearchJSON([]byte(
-		`{"results":[{"key":"ABC-1","sprint":[{"id":13126,"name":"Team 0803-0807","state":"active"}]}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if issues[0].Sprint[0].ID != 13126 {
-		t.Errorf("sprint id = %d, want 13126", issues[0].Sprint[0].ID)
-	}
-}
-
-func TestCreateArgs(t *testing.T) {
-	got := CreateArgs(NewIssueRequest{
-		Project: "ABC", Type: "Task", Summary: "a title", SprintID: 13126,
-	})
-	want := []string{"create", "-p", "ABC", "-t", "Task", "-s", "a title", "-S", "13126", "-f", "json"}
-	if len(got) != len(want) {
-		t.Fatalf("args = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("args = %v, want %v", got, want)
-		}
+// Adapter.withURL must fill Issue.URL from the site URL when the API left it
+// empty - the REST responses Client returns never carry it, unlike the old
+// CLI's own JSON, and keybind.go's open-in-browser has nothing else to read.
+func TestAdapterFillsInTheIssueURLWhenTheAPILeftItEmpty(t *testing.T) {
+	a := Adapter{SiteURL: "https://example.atlassian.net/"}
+	got := a.withURL(Issue{Key: "ABC-1"})
+	want := "https://example.atlassian.net/browse/ABC-1"
+	if got.URL != want {
+		t.Errorf("url = %q, want %q", got.URL, want)
 	}
 }
 
-// A section with no sprint (say, "assigned to me") must not pass -S at all:
-// the CLI would take an empty value as a sprint named "".
-func TestCreateArgsOmitsAnAbsentSprint(t *testing.T) {
-	got := CreateArgs(NewIssueRequest{Project: "ABC", Type: "Task", Summary: "a title"})
-	for _, a := range got {
-		if a == "-S" {
-			t.Fatalf("args should carry no sprint flag: %v", got)
-		}
-	}
-}
-
-// The args are handed to exec.Command as a slice, never to a shell, so a
-// summary full of shell syntax is data. This pins that: the summary must
-// arrive as exactly one argument, unquoted and unescaped.
-func TestCreateArgsPassesAHostileSummaryVerbatim(t *testing.T) {
-	summary := `'; rm -rf ~ #`
-	got := CreateArgs(NewIssueRequest{Project: "ABC", Type: "Task", Summary: summary})
-	found := 0
-	for _, a := range got {
-		if a == summary {
-			found++
-		}
-	}
-	if found != 1 {
-		t.Fatalf("the summary should appear once, verbatim: %v", got)
-	}
-}
-
-// `jira create -f json` prints {key, id, self, url}. Only the key and the URL
-// are of any use here: the key goes in the footer, the URL makes the new issue
-// openable before the section has refetched.
-func TestParseCreateJSON(t *testing.T) {
-	got, err := ParseCreateJSON([]byte(`{
-		"key": "ABC-1234",
-		"id": "10001",
-		"self": "https://example.atlassian.net/rest/api/3/issue/10001",
-		"url": "https://example.atlassian.net/browse/ABC-1234"
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Key != "ABC-1234" {
-		t.Errorf("key = %q", got.Key)
-	}
-	if got.URL != "https://example.atlassian.net/browse/ABC-1234" {
-		t.Errorf("url = %q", got.URL)
-	}
-}
-
-// A create that prints something unparseable must be an error, not a silent
-// success reporting an empty key.
-func TestParseCreateJSONRejectsAKeylessResponse(t *testing.T) {
-	if _, err := ParseCreateJSON([]byte(`{"id":"10001"}`)); err == nil {
-		t.Error("a response with no key should be an error")
-	}
-}
-
-// `jira comment list` prints {issue_key, total, comments:[{id,author,body,
-// created,updated}]}. It has no -f flag: JSON is all it prints.
-func TestParseCommentsJSON(t *testing.T) {
-	got, err := ParseCommentsJSON([]byte(`{
-		"issue_key": "ABC-1",
-		"total": 2,
-		"comments": [
-			{"id":"1","author":"甲","body":"first","created":"2026-06-18T16:10:10.119+0900"},
-			{"id":"2","author":"乙","body":"second","created":"2026-06-19T09:00:00.000+0900"}
-		]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("comments = %d, want 2", len(got))
-	}
-	if got[0].Author != "甲" || got[0].Body != "first" {
-		t.Errorf("first comment = %+v", got[0])
-	}
-	if got[0].Created.IsZero() {
-		t.Error("the created time should parse, so the preview can age it")
-	}
-}
-
-// An issue with no comments is the common case and must not be an error.
-func TestParseCommentsJSONAcceptsNone(t *testing.T) {
-	got, err := ParseCommentsJSON([]byte(`{"issue_key":"ABC-1","total":0,"comments":[]}`))
-	if err != nil || len(got) != 0 {
-		t.Errorf("got %v, %v; want no comments and no error", got, err)
-	}
-}
-
-// The preview header already states the type, status, priority and assignee, so
-// rendering `jira get -f markdown` under it printed all of them twice. The json
-// form carries the description on its own.
-func TestParseIssueJSONTakesTheDescriptionOnly(t *testing.T) {
-	body, err := ParseIssueJSON([]byte(`{
-		"key": "ABC-1",
-		"status": "To Do",
-		"priority": "Medium",
-		"description": "# 概要\n\n- ほんぶん"
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(body, "ほんぶん") {
-		t.Errorf("body = %q, want the description", body)
-	}
-	for _, unwanted := range []string{"To Do", "Medium"} {
-		if strings.Contains(body, unwanted) {
-			t.Errorf("body should not repeat %q, which the header already shows: %q", unwanted, body)
-		}
-	}
-}
-
-// Most issues have no description at all. Saying so beats an empty pane that
-// looks like a failed load.
-func TestParseIssueJSONReportsAnEmptyDescription(t *testing.T) {
-	body, err := ParseIssueJSON([]byte(`{"key":"ABC-1","description":null}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(body, "no description") {
-		t.Errorf("body = %q", body)
-	}
-}
-
-// The comment list is a subcommand, so the key is the third arg, not the second.
-// Getting that wrong would ask Jira about an issue called "list".
-func TestCLICommentsReadsTheThread(t *testing.T) {
-	cli := CLI{Bin: "./testdata/fake-jira-ok.sh"}
-
-	got, err := cli.Comments(context.Background(), "ABC-1234")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 1 || got[0].Author != "甲" {
-		t.Fatalf("comments = %+v", got)
-	}
-}
-
-// Jira returns null for a time it does not have, and the four-character string
-// "null" is a different thing - only the JSON decoder can tell them apart.
-func TestJiraTimeAcceptsNullAndRejectsNonsense(t *testing.T) {
-	var payload struct {
-		Updated JiraTime `json:"updated"`
-	}
-	if err := json.Unmarshal([]byte(`{"updated":null}`), &payload); err != nil {
-		t.Fatalf("a null time should unmarshal as absent: %v", err)
-	}
-	if !payload.Updated.IsZero() {
-		t.Error("a null time should be the zero time")
-	}
-	if err := json.Unmarshal([]byte(`{"updated":"not a time"}`), &payload); err == nil {
-		t.Error("an unparseable time should be an error, not the zero time")
-	}
-	if err := json.Unmarshal([]byte(`{"updated":12345}`), &payload); err == nil {
-		t.Error("a number should be an error, not a time")
-	}
-}
-
-// The message the footer shows must name what went wrong, and stay one line.
-func TestCLIReportsATimeoutAsSuch(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
-	defer cancel()
-
-	_, err := (CLI{Bin: "./testdata/fake-jira-ok.sh"}).Search(ctx, "project = ABC", 1)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("a timed-out call should wrap the deadline error, got: %v", err)
+// A URL the API did supply must not be overwritten - withURL only fills a gap,
+// it does not second-guess Jira.
+func TestAdapterLeavesAnExistingURLAlone(t *testing.T) {
+	a := Adapter{SiteURL: "https://example.atlassian.net"}
+	got := a.withURL(Issue{Key: "ABC-1", URL: "https://other.example.com/browse/ABC-1"})
+	if got.URL != "https://other.example.com/browse/ABC-1" {
+		t.Errorf("url = %q, want the original left untouched", got.URL)
 	}
 }

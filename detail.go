@@ -11,8 +11,8 @@ import (
 )
 
 // detailDebounce is how long the cursor must sit still before the body is
-// fetched. Each jira call costs ~360ms of startup, so fetching per keystroke
-// would make scrolling feel broken.
+// fetched. Even a direct API call is real network round-trip time, so
+// fetching on every keystroke would still make scrolling feel broken.
 const detailDebounce = 150 * time.Millisecond
 
 // selectionChanged arms a debounced load for whatever is now selected. The
@@ -49,8 +49,8 @@ func (m *Model) selectionChanged() tea.Cmd {
 
 // refreshDetail rebuilds the pane from whatever has arrived so far. Three
 // sources land at different times - the header came with the search, the body
-// from `jira get`, the comments from `jira comment list` - so every arrival
-// re-renders the whole pane rather than appending to it.
+// from the issue's description, the comments from its own call - so every
+// arrival re-renders the whole pane rather than appending to it.
 func (m *Model) refreshDetail(reset bool) {
 	issue, ok := m.sections[m.active].selected()
 	if !ok {
@@ -87,9 +87,9 @@ func rule(width int, ps previewStyles) string {
 	return ps.rule.Render(strings.Repeat("─", width))
 }
 
-// loadComments is its own call because `jira comment list` is a separate
-// subcommand - another ~360ms. It is not cached: a comment thread is the part of
-// an issue most likely to have changed since you last looked.
+// loadComments is its own call, separate from the issue body. It is not
+// cached: a comment thread is the part of an issue most likely to have
+// changed since you last looked.
 func (m Model) loadComments(key string) tea.Cmd {
 	searcher := m.searcher
 	return func() tea.Msg {
@@ -102,7 +102,7 @@ func (m Model) loadComments(key string) tea.Cmd {
 }
 
 // loadIssue returns the body from cache when it is fresh, and otherwise asks
-// the CLI. Writing the cache is best effort.
+// the Searcher. Writing the cache is best effort.
 func (m Model) loadIssue(key string) tea.Cmd {
 	cache, searcher, now := m.cache, m.searcher, m.now
 	return func() tea.Msg {

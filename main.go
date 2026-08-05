@@ -7,22 +7,23 @@
 // It is read-only. Anything that changes an issue runs through a configured
 // keybinding, so the dashboard itself can never write to Jira.
 //
-// Every query goes through the `jira` CLI, which pays ~360ms of tsx startup
-// per invocation. Sections therefore render from cache first and refresh
-// behind that; see docs/design.local.md for the measurements.
+// Every query used to shell out to the `jira` CLI, which paid ~360ms of tsx
+// startup per invocation; it now calls internal/jira directly. Sections still
+// render from cache first and refresh behind that - the network itself is
+// still the network; see docs/design.local.md for the measurements.
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	jirapkg "jira-dash/internal/jira"
 )
 
 const version = "0.1.0"
@@ -51,18 +52,21 @@ func run(configFlag, section string) error {
 	}
 
 	// Config first: on a machine that is missing both, its error is the one
-	// that names a next step ("copy config.yml.example to ..."), whereas the CLI
-	// error can only say the binary is absent.
+	// that names a next step ("copy config.yml.example to ..."), whereas a
+	// missing credential set can only say to run `jira auth login`.
 	path := resolveConfigPath(configFlag, os.Getenv("JIRA_DASH_CONFIG"), home)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		return err
 	}
 
-	// A missing CLI is the one dependency worth naming explicitly; every
-	// section would otherwise fail with the same unhelpful error.
-	if _, err := exec.LookPath("jira"); err != nil {
-		return errors.New("the `jira` CLI is not on PATH")
+	// Credentials are resolved once, at startup: a bad or missing set fails
+	// here with the actionable message LoadCredentials already produces
+	// ("run `jira auth login`"), rather than every section failing that same
+	// way once the dashboard is already on screen.
+	creds, err := jirapkg.LoadCredentials()
+	if err != nil {
+		return err
 	}
 
 	start, err := sectionIndex(cfg, section)
@@ -71,7 +75,8 @@ func run(configFlag, section string) error {
 	}
 
 	cache := NewCache(filepath.Join(home, ".cache", "jira-dash"))
-	model := NewModel(cfg, CLI{Bin: "jira"}, cache, time.Now)
+	searcher := Adapter{Client: jirapkg.NewClient(creds), SiteURL: creds.SiteURL}
+	model := NewModel(cfg, searcher, cache, time.Now)
 	model.active = start
 
 	_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()

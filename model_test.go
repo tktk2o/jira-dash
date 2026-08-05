@@ -407,7 +407,7 @@ func TestCreateTakesProjectAndSprintFromTheRow(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("create calls = %d, want 1", len(got))
 	}
-	want := NewIssueRequest{Project: "ABC", Type: "Task", Summary: "new thing", SprintID: 13126}
+	want := NewIssueRequest{Project: "ABC", Type: "Task", Summary: "new thing", Sprint: "Team 0803-0807"}
 	if got[0] != want {
 		t.Errorf("request = %+v, want %+v", got[0], want)
 	}
