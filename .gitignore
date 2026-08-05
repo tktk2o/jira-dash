@@ -3,3 +3,6 @@ config.local.yml
 
 # `go build` with no -o drops the binary here, named after the package.
 /jira-dash
+
+# `go build ./cmd/jira` with no -o drops the binary here, named after the package.
+/jira
