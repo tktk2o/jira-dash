@@ -85,9 +85,20 @@ type rawIssue struct {
 // compile time (see fields.go). An empty Sprint id - a site with no sprint
 // field configured - leaves Issue.Sprint nil, which CurrentSprint and
 // InActiveSprintPrefix already treat as "not in a sprint".
-func (r rawIssue) toIssue(fieldIDs FieldIDs) Issue {
+//
+// siteURL fills Issue.URL, a plain browse link (not a secret - the old CLI
+// printed the same one). Nothing filled it in until T11's diff against the
+// old CLI showed every issue coming back with url:"": Task 10 removed the
+// shelled-out `jira` process, which had built this link itself, and nothing
+// took over the job on this path. An empty siteURL (any test, which never
+// sets Credentials.SiteURL) leaves Issue.URL empty rather than a malformed
+// "/browse/KEY".
+func (r rawIssue) toIssue(fieldIDs FieldIDs, siteURL string) Issue {
 	var issue Issue
 	issue.Key = r.Key
+	if siteURL != "" {
+		issue.URL = siteURL + "/browse/" + r.Key
+	}
 	issue.Summary = r.Fields.Summary
 	if r.Fields.Status != nil {
 		issue.Status = r.Fields.Status.Name
@@ -170,7 +181,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Key == "" {
 		raw.Key = key
 	}
-	return raw.toIssue(fieldIDs), nil
+	return raw.toIssue(fieldIDs, c.creds.SiteURL), nil
 }
 
 // IssueDescription fetches one issue and returns only its description,
@@ -229,7 +240,7 @@ func (c *Client) Search(ctx context.Context, jql string, limit int) ([]Issue, er
 			return nil, err
 		}
 		for _, raw := range resp.Issues {
-			issues = append(issues, raw.toIssue(fieldIDs))
+			issues = append(issues, raw.toIssue(fieldIDs, c.creds.SiteURL))
 			if len(issues) == limit {
 				return issues, nil
 			}
