@@ -1,7 +1,12 @@
+**English** | [日本語](README.ja.md)
+
+> The design records linked throughout this file ([`docs/adr/`](docs/adr/)) are
+> Japanese only.
+
 # jira-dash
 
-`gh dash` のような設定駆動のダッシュボードを Jira に対して出す TUI。
-見たい範囲を JQL でタブとして定義しておき、そこから参照・作成する。
+A TUI that presents a configuration-driven dashboard for Jira, similar to `gh dash`.
+Define the ranges you care about as tabs via JQL, then view and create issues from there.
 
 ```
  My Issues │ Example Sprint (15) │ Example Backlog │ Other Backlog
@@ -9,24 +14,26 @@
   PROJ-118  🔧  管理画面のログイン機能全般の見直し             To Do    2h  │  ## PROJ-123
 ```
 
-## 前提
+## Prerequisites
 
-- Go（ビルド時のみ）。jira-dash 自身が Jira API を直接叩くので、外部の CLI は不要
-- `~/.config/jira-cli/credentials.json`（または `JIRA_*` 環境変数）に認証情報が
-  あること。これは `jira auth login`（本リポジトリの `cmd/jira`）が書き込む
-  （なぜ同じファイルを共有するかは [docs/adr/0002](docs/adr/0002-credentials-shared-with-the-cli.md)）
-- macOS 前提（`y`/`Y` のクリップボードが `pbcopy`）
+- Go (build time only). jira-dash itself calls the Jira API directly, so no external CLI is required
+- Credentials must exist at `~/.config/jira-cli/credentials.json` (or as `JIRA_*`
+  environment variables). This file is written by `jira auth login` (`cmd/jira` in
+  this repository)
+  (for why the file is shared, see [docs/adr/0002](docs/adr/0002-credentials-shared-with-the-cli.md))
+- macOS is assumed (the `y`/`Y` clipboard uses `pbcopy`)
 
-## インストール
+## Installation
 
-TUI 本体と、それが使う認証・キーバインドの両方が呼ぶ CLI の、2つのバイナリがある。
-どちらも直接 PATH に置かず、`scripts/jd` への symlink を置く。`jd` は起動時に
-ソースが新しければビルドしてから exec するので、**ビルドを手で打つ手順はない**
-（理由と実測は [docs/adr/0012](docs/adr/0012-rebuild-on-launch.md)）。
+There are two binaries: the TUI itself, and the CLI called by both its auth flow and
+its keybindings. Neither is placed on PATH directly; instead a symlink to `scripts/jd`
+is placed there. `jd` builds from source if it's newer, then execs — so **there is no
+manual build step**
+(for the rationale and measurements, see [docs/adr/0012](docs/adr/0012-rebuild-on-launch.md)).
 
 ```bash
-# 起動名でどちらのバイナリかが決まる。シェルのエイリアスにしないのは、dotfiles の
-# .zshrc が公開リポジトリで追跡されているため。リンクなら PATH の話だけで済む。
+# The invoked name decides which binary runs. This isn't a shell alias because the
+# dotfiles' .zshrc is tracked in a public repo. A symlink keeps it purely a PATH concern.
 ln -s "$PWD/scripts/jd" ~/.local/bin/jhd
 ln -s "$PWD/scripts/jd" ~/.local/bin/jira
 
@@ -38,56 +45,62 @@ mkdir -p ~/.config/jira-dash
 ln -s "$PWD/config.local.yml" ~/.config/jira-dash/config.yml
 ```
 
-ビルドは `.bin/` に置かれる（`.gitignore` 済み）。`JD_NO_AUTOBUILD=1` を付けると
-ビルドを一切せず現在の `.bin/` をそのまま実行する — 計測や、ソースを弄っている最中に
-安定版で作業したい時に使う。
+Builds are placed in `.bin/` (already in `.gitignore`). Setting `JD_NO_AUTOBUILD=1`
+skips the build entirely and runs whatever is currently in `.bin/` as-is — useful for
+benchmarking, or when you want to keep working against a stable build while the source
+is mid-edit.
 
-`scripts/verify-against-old-cli` は、この Go 版 CLI を移行前の TypeScript 版 CLI と
-出力差分で比較するスクリプト。旧 CLI がまだ端末に入っている間しか使えない
-（経緯は [docs/adr/0001](docs/adr/0001-go-cli-instead-of-the-typescript-one.md)）。
+`scripts/verify-against-old-cli` is a script that diffs this Go CLI's output against
+the pre-migration TypeScript CLI's output. It only works while the old CLI is still
+installed on the machine
+(for the background, see [docs/adr/0001](docs/adr/0001-go-cli-instead-of-the-typescript-one.md)).
 
-設定は `--config <path>` か `JIRA_DASH_CONFIG` でも指定できる（どちらも先頭の `~` を
-自前で展開する）。`config.local.yml` は `.gitignore` 済み — JQL がプロジェクトキーや
-スプリント名を含むため、コミットしない。
+The config path can also be given via `--config <path>` or `JIRA_DASH_CONFIG` (both
+expand a leading `~` themselves). `config.local.yml` is already in `.gitignore` — it
+is never committed, since its JQL contains project keys and sprint names.
 
 ```
---config <path>      設定ファイル（既定: ~/.config/jira-dash/config.yml）
---section <title>    このタイトルのタブで開く。無い名前なら候補を並べて終了する
---version            バージョンを表示して終了
+--config <path>      Config file (default: ~/.config/jira-dash/config.yml)
+--section <title>    Open on the tab with this title. If the name doesn't exist, list the candidates and exit
+--version            Print the version and exit
 ```
 
-### 設定は起動時に検証する
+### Configuration is validated at startup
 
-黙って無視されるより落ちたほうがマシなものは、すべて起動時に落とす。
+Anything that would rather fail loudly than be silently ignored is made to fail at
+startup.
 
-- **知らないキー**（`limmit:` のような typo）— YAML は既定では黙って捨てるので、
-  設定した機能だけが動かない状態になる。設定が悪いと言わせる
-- **キーの二重取り** — `create` と `keybindings.issues` が同じキーを持つ、または
-  ダッシュボード自身のキー（`j` / `/` / `q` / `r` など）を奪う。押した側は
-  handleKey の判定順で黙って負けるので、負けた側が見えるのは起動時だけ
-- **`dir` の不在** — 上記のとおり
-- **空の値** — title / jql の無い section、type の無い `create`、command の無い
-  keybinding
+- **Unknown keys** (a typo like `limmit:`) — YAML silently drops these by default,
+  leaving only the misconfigured feature broken. This forces the config to be flagged
+  as bad instead
+- **Duplicate key bindings** — `create` and `keybindings.issues` sharing a key, or
+  either one claiming a key the dashboard itself already uses (`j` / `/` / `q` / `r`,
+  etc). Whichever side loses silently loses based on `handleKey`'s evaluation order,
+  so the only moment the losing side is visible at all is startup
+- **A missing `dir`** — same reasoning as above
+- **Empty values** — a section with no title/jql, a `create` entry with no type, a
+  keybinding with no command
 
-## キー操作
+## Key bindings
 
-| キー | 動作 |
+| Key | Action |
 |------|------|
-| `h` / `l` / `←` / `→` / `tab` / `shift+tab` | セクション切り替え |
-| `j` / `k` / `gg` / `G` | 移動 |
-| `p` | プレビューの開閉 |
-| `ctrl+d` / `ctrl+u` | プレビューを半画面スクロール（行カーソルは動かない） |
-| `/` | 絞り込み（`esc` で解除）。再取得はしない |
-| `r` | このセクションを再取得 |
-| `y` / `Y` | 課題キー / URL をコピー |
-| `?` | ヘルプ |
-| `q` | 終了 |
+| `h` / `l` / `←` / `→` / `tab` / `shift+tab` | Switch section |
+| `j` / `k` / `gg` / `G` | Move |
+| `p` | Toggle preview |
+| `ctrl+d` / `ctrl+u` | Scroll the preview by half a screen (the row cursor doesn't move) |
+| `/` | Filter (`esc` to clear). Does not refetch |
+| `r` | Refetch this section |
+| `y` / `Y` | Copy the issue key / URL |
+| `?` | Help |
+| `q` | Quit |
 
-### 作業ディレクトリ（`dir`）
+### Working directory (`dir`)
 
-キーバインドが走るディレクトリは `defaults.dir`、または section ごとの `dir` で
-決める（section 側が優先）。ボードとリポジトリは対応するので**タブの粒度**が正しく、
-キーバインド側は1回書けば全タブで使い回せる。
+The directory a keybinding runs in is decided by `defaults.dir`, or a per-section
+`dir` (the section takes priority). Because boards and repositories correspond
+one-to-one, **the tab is the right granularity** for this, and a keybinding only
+needs to be written once to be reused across every tab.
 
 ```yaml
 defaults:
@@ -95,48 +108,55 @@ defaults:
 jiraSections:
   - title: Other board
     jql: project = OTHER
-    dir: ~/src/github.com/example/other-repo   # section が defaults に勝つ
+    dir: ~/src/github.com/example/other-repo   # section overrides defaults
 ```
 
-これは2通りに効く。コマンド自身の cwd になり、かつ `{{.Dir}}` で参照できる。
-両方あるのは、`tmux split-window` / `new-window` が**cwd を継承せず `-c` で受け取る**
-ため — 新しいペインやウィンドウを開く類のコマンドには `-c {{.Dir}}` が必要で、
-`git log` のような自前で完結するコマンドには cwd だけで足りる。
+This is used in two ways: it becomes the command's own cwd, and it's also available
+as `{{.Dir}}`. Both exist because `tmux split-window` / `new-window` **don't inherit
+cwd — they take it via `-c`** — so a command that opens a new pane or window needs
+`-c {{.Dir}}`, while a self-contained command like `git log` is satisfied by cwd
+alone.
 
-先頭の `~` は展開する。パスの存在は**起動時に**確認する（キーを押した瞬間ではなく）
-— typo が「入れないディレクトリ」についてのコマンド側のエラーとして、ずっと後に
-出てくるのを避けるため。
+A leading `~` is expanded. Path existence is checked **at startup**, not at the
+moment a key is pressed — so that a typo doesn't surface much later as the invoked
+command's own error about "can't enter this directory."
 
-`o`（ブラウザで開く）などは設定の `keybindings.issues` 次第。`{{...}}` はシェル
-クォート済みで埋まるので、変数を自分でクォートしてはいけない。設定したキーは
-`create` の分も含めて `?` に出る（`name:` があればその名前、無ければコマンド本文）。
+Things like `o` (open in browser) are entirely up to the `keybindings.issues` config.
+`{{...}}` values are substituted already shell-quoted, so never quote the variable
+yourself. Configured keys — including `create` entries — show up under `?` (using
+`name:` if given, otherwise the command body itself).
 
-`terminal: true` を付けたキーだけがターミナルを渡される（実行後にダッシュボード
-全体が再描画される）。付けなければ標準出力・標準エラーは奪われず、失敗時は
-stderr の最後の行がフッターに出る。エディタやページャなど自前で画面を描くコマンド
-以外は付けない。
+Only keys with `terminal: true` are handed the terminal (the whole dashboard redraws
+after the command finishes). Without it, stdout/stderr aren't taken over, and on
+failure the last line of stderr shows in the footer. Reserve `terminal: true` for
+things that draw their own screen, like editors or pagers — nothing else needs it.
 
-`?` はフッターの下に、キー（明色）と説明（暗色）を**列で揃えて**並べる（gh-dash と同じ）。
-列数は幅に合わせて 4〜1 で選ばれ、列幅はその列の中身だけで決まる。長いコマンドは
-その列に収まる分だけ切る — 1つの長い行のために後続の列を画面外に押し出さないため。
+`?` lays out keys (bright) and their descriptions (dim) below the footer, **aligned
+into columns** (same as gh-dash). The column count is chosen from 4 down to 1 based
+on available width, and each column's width is driven only by that column's own
+contents. Long commands are truncated to fit their column — so one long line never
+pushes the following columns off-screen.
 
-## 打った文字を受け取るキー（`prompt: true`）
+## Keys that capture typed text (`prompt: true`)
 
-`keybindings.issues` のキーに `prompt: true` を付けると、そのキーは即実行せず、
-下端に枠を出して**打った文字を受け取る**（複数行可、`Ctrl+d` で送信）。空のまま送ると
-拒否する — 指示の無い実行は `prompt: true` の無いキーがやることなので。
+Adding `prompt: true` to a `keybindings.issues` key changes it from immediate
+execution to opening a box at the bottom of the screen that **captures what you type**
+(multi-line, submit with `Ctrl+d`). Submitting empty is rejected — running with no
+instruction at all is what keys without `prompt: true` are for.
 
-受け取った文字は2つの変数で渡せる。**どちらを使うかは間違えると外に出る**。
+The captured text can be passed via two different variables. **Using the wrong one
+leaks data outward.**
 
-| 変数 | 中身 | 用途 |
+| Variable | Contents | Use case |
 |------|------|------|
-| `{{.Prompt}}` | 課題キー ＋ タイトル ＋ 本文 ＋ `---` ＋ 打った文字 | Claude に渡す |
-| `{{.Input}}` | 打った文字**だけ** | Jira に投稿する |
+| `{{.Prompt}}` | issue key + title + body + `---` + what you typed | passing to Claude |
+| `{{.Input}}` | **only** what you typed | posting to Jira |
 
-取り違えると、コメント投稿に `{{.Prompt}}` を使ってタイトルや本文まで Jira に
-載ってしまう（なぜ2つに分けたかは [docs/adr/0009](docs/adr/0009-prompt-versus-input.md)）。
+Mixing them up — e.g. using `{{.Prompt}}` for a comment post — ends up posting the
+title and body into Jira along with the comment
+(for why they're split into two, see [docs/adr/0009](docs/adr/0009-prompt-versus-input.md)).
 
-### Claude に渡す
+### Passing to Claude
 
 ```yaml
 - key: a
@@ -147,52 +167,55 @@ stderr の最後の行がフッターに出る。エディタやページャな�
     claude --permission-mode auto {{.Prompt}}
 ```
 
-ペインで開くのは、Claude と jhd を**同じ画面に並べる**ため（なぜテンプレート
-文字列やウィンドウ分割ではなくスクリプトでペインを割るのかは
-[docs/adr/0008](docs/adr/0008-claude-pane-budget.md)）。
+This opens in a pane so Claude and jhd sit **side by side on the same screen** (for
+why a script splits the pane instead of a template string or window split, see
+[docs/adr/0008](docs/adr/0008-claude-pane-budget.md)).
 
-### `jhd-claude-split`（ペインの割り方）
+### `jhd-claude-split` (how panes are split)
 
-`scripts/jhd-claude-split` は tmux のペインを**最大2枚まで**開く。3枚目と tmux の
-外からの呼び出しは拒否する（理由は [docs/adr/0008](docs/adr/0008-claude-pane-budget.md)）。
+`scripts/jhd-claude-split` opens **at most two** tmux panes. A third pane, or a call
+from outside tmux, is rejected
+(for the rationale, see [docs/adr/0008](docs/adr/0008-claude-pane-budget.md)).
 
 ```
 ┌────────────────────────────────┐
-│ jira-dash          160x20      │  ← 幅は変わらない
+│ jira-dash          160x20      │  ← width never changes
 ├───────────────┬────────────────┤
-│ 1枚目  80x24  │ 2枚目  79x24   │
+│ pane 1  80x24 │ pane 2  79x24  │
 └───────────────┴────────────────┘
 ```
 
-- **1枚目**は jhd を下に割る（`-fv -l 24`）。行は減るが桁は減らない
-- **2枚目**は jhd ではなく**1枚目**を横に割る。jhd は 160x20 のまま影響を受けない
-- **3枚目**は拒否し、tmux のステータス行に理由を出す
-- ペインを1枚閉じれば枠が空く（印は tmux のペイン単位ユーザオプション
-  `@jhd-claude` で、ペインと一緒に消える）
+- **Pane 1** splits jhd downward (`-fv -l 24`). Rows shrink, columns don't
+- **Pane 2** splits **pane 1** sideways, not jhd — jhd stays at 160x20, unaffected
+- **Pane 3** is rejected, with the reason printed on tmux's status line
+- Closing one pane frees the slot back up (tracked via a tmux per-pane user option,
+  `@jhd-claude`, which disappears along with the pane)
 
-インストール:
+Installation:
 
 ```bash
 ln -s "$PWD/scripts/jhd-claude-split" ~/.local/bin/jhd-claude-split
 ```
 
-本文を同梱するのは、プレビューが**すでに取得済み**だから（渡さないと受け手が
-Jira REST 呼び出し（0.5〜1.2s）をもう一度払うことになり、そもそも認証情報を
-持っていないかもしれない）。本文が空、または本プログラム自身の言葉である
-`*no description*` のときは何も入れない（「説明が無い」という話を Claude に
-させないため）。
+The issue body is included because the preview has **already been fetched** — without
+it, the receiving side would have to pay for another Jira REST call (0.5–1.2s), and
+might not even hold credentials to make one at all. When the body is empty, or is this
+program's own placeholder string `*no description*`, nothing is inserted (so Claude
+is never asked to reason about "there's no description").
 
-制約: 本文はプレビューの取得が終わっていないと入らない（デバウンス 150ms ＋
-Jira REST の応答待ち）。カーソルを置いた直後に押すとタイトルと指示だけになる。
+Constraint: the body is only populated once the preview fetch has completed (150ms
+debounce plus the Jira REST round trip). Pressing the key right after moving the
+cursor yields only the title and instruction.
 
-`prompt: true` の無いキーは今までどおり即実行する — ブラウザで開くような固定の
-コマンドにはそちらが正しい形。
+Keys without `prompt: true` still execute immediately as before — the right shape for
+a fixed command like opening a browser.
 
-### コメントを投稿する（`refresh: true`）
+### Posting a comment (`refresh: true`)
 
-同じ枠で、渡す先を `jira comment add` にすれば投稿になる。ダッシュボード自身が
-Jira を書き換えるのは作成だけで、それ以外は設定のコマンドに委ねる方針
-（[docs/adr/0006](docs/adr/0006-writes-go-through-keybindings.md)）による。
+Using the same box but pointing the target at `jira comment add` turns it into a
+comment post. The dashboard itself only ever writes to Jira for issue creation;
+everything else is delegated to configured commands, by design
+(see [docs/adr/0006](docs/adr/0006-writes-go-through-keybindings.md)).
 
 ```yaml
 - key: m
@@ -202,42 +225,44 @@ Jira を書き換えるのは作成だけで、それ以外は設定のコマン
   command: jira comment add {{.IssueKey}} -b {{.Input}}
 ```
 
-`refresh: true` はコマンドが**正常終了したら**行とプレビューの両方を取り直す
-（`r` と違って行は消さない）。既定は off — 付けると Jira REST の呼び出しが2回
-（約1〜2.4s）増える。
+`refresh: true` refetches both the row and the preview **once the command exits
+successfully** (unlike `r`, the row is never cleared in the meantime). It defaults to
+off — enabling it adds two more Jira REST calls (roughly 1–2.4s).
 
-`{{.Prompt}}` で書くとタイトルと本文までコメントとして Jira に載る。投稿系は
-`{{.Input}}`。
+Writing `{{.Prompt}}` here would post the title and body into Jira as part of the
+comment too. Use `{{.Input}}` for anything that posts.
 
-## 選択肢から選ぶキー（`choices` / `choicesFrom`）
+## Keys that pick from a list (`choices` / `choicesFrom`)
 
-`choices` か `choicesFrom` を付けたキーは、同じ枠に**リストを出して選ばせる**
-（`↑`/`↓` で移動、`enter` で決定、`esc` で取消）。選んだ値が `{{.Choice}}` に入る。
-担当者やステータスのように**受け付ける値が短い固定集合**のものは、打つより選ぶほうが
-速く、かつ確実 — accountId とサイト固有のステータス名は、誰も記憶から正しく打てない。
+A key with `choices` or `choicesFrom` opens the same box but **shows a list to pick
+from** (`↑`/`↓` to move, `enter` to confirm, `esc` to cancel). The chosen value lands
+in `{{.Choice}}`. For things like assignee or status — where the set of acceptable
+values is short and fixed — picking is faster and more reliable than typing: nobody
+can reliably type an accountId or a site-specific status name from memory.
 
-枠の中で文字を打つとその場でリストが絞り込まれる（fuzzy — 打った文字が順番に含まれて
-いれば一致、連続していなくても、大文字小文字を無視してもよい）。一致件数はリストの上の
-行に出る。`j`/`k` を含めた文字はすべて絞り込みに使われ、移動は `↑`/`↓` に専念する。
+Typing inside the box filters the list live (fuzzy — a match requires the typed
+characters to appear in order, not necessarily contiguously, case-insensitive). The
+match count is shown on the line above the list. Every character, including `j`/`k`,
+goes toward filtering; movement is dedicated to `↑`/`↓`.
 
-`choicesFrom` には3つのソースがある。
+`choicesFrom` supports three sources.
 
 ```yaml
-#: ステータスを変える（今実際に選べる遷移から）
+#: change status (from the transitions actually available right now)
 - key: s
   name: status
   choicesFrom: transitions
   refresh: true
   command: jira edit {{.IssueKey}} -S {{.Choice}}
 
-#: 担当者を変える（その課題に割り当て可能なユーザーから）
+#: change assignee (from users assignable to this issue)
 - key: A
   name: assign
   choicesFrom: assignees
   refresh: true
   command: jira edit {{.IssueKey}} -a {{.Choice}}
 
-#: 固定の一覧から選ぶ（choices — API を呼ばず、いつでも同じ選択肢を出す）
+#: pick from a fixed list (choices — no API call, always the same options)
 - key: p
   name: priority
   choices:
@@ -249,34 +274,39 @@ Jira を書き換えるのは作成だけで、それ以外は設定のコマン
   command: jira edit {{.IssueKey}} --priority {{.Choice}}
 ```
 
-- **`choicesFrom: transitions`** — その課題で今実際に選べる遷移（`GET
-  /issue/{key}/transitions`）。label は付かず、遷移名がそのまま `{{.Choice}}` に渡る
-- **`choicesFrom: assignees`** — その課題に割り当て可能なユーザー（`GET
-  /user/assignable/search`）。label が表示名、value が accountId
-- **`choicesFrom: statuses`** — 設定ではなく**ダッシュボード自身の状態**から候補を作る
-  （今のタブの行が持っている status、重複を除いて出現順）。行が無い status は出ない
+- **`choicesFrom: transitions`** — the transitions actually available for this issue
+  right now (`GET /issue/{key}/transitions`). No label; the transition name itself is
+  passed straight through as `{{.Choice}}`
+- **`choicesFrom: assignees`** — users assignable to this issue (`GET
+  /user/assignable/search`). `label` is the display name, `value` is the accountId
+- **`choicesFrom: statuses`** — candidates built not from config but from **the
+  dashboard's own current state** (the statuses present among the current tab's rows,
+  deduplicated, in order of appearance). A status with no matching row never appears
 
-3つのソースの選定理由（`transitions` の正確さ、`assignees` で accountId を手打ちしな
-くていい理由、API を呼ばない `statuses` をあえて残す理由）は
-[docs/adr/0010](docs/adr/0010-picker-choice-sources.md)。
+The reasoning behind these three sources (why `transitions` is the accurate one, why
+`assignees` saves you from typing an accountId by hand, and why the API-free
+`statuses` is kept around at all) is in [docs/adr/0010](docs/adr/0010-picker-choice-sources.md).
 
-`transitions` / `assignees` は API 呼び出しなので、候補が届いてから枠が開く
-（フッターに読み込み中と出る）。取得に失敗した場合も枠は開かず、フッターに理由が出る。
+Because `transitions` / `assignees` require an API call, the box only opens once the
+candidates arrive (the footer shows a loading indicator meanwhile). If the fetch
+fails, the box never opens and the footer shows why instead.
 
-固定の一覧が欲しければ（サイトに問い合わせず、いつも同じ選択肢を出したければ）
-`choicesFrom` を消して `choices` に列挙する。`label` と `value` が別なのは、まさに
-選択肢が要る値でその2つが食い違う場合のため — `label` を省くと `value` がそのまま
-表示される。
+If you want a fixed list — no request to the site, always the same options — drop
+`choicesFrom` and enumerate `choices` instead. `label` and `value` are separate
+specifically for cases where the value that needs to be sent differs from what should
+be shown; omitting `label` displays `value` as-is.
 
-`prompt` / `choices` / `choicesFrom` を同じキーに2つ以上書くと**起動時に落ちる**。
-1つのキーが開けるものは1つで、両方書くと先に見たほうが黙って勝つ。
+Writing two or more of `prompt` / `choices` / `choicesFrom` on the same key **fails at
+startup**. A single key can only open one kind of box; if both are specified, whichever
+is checked first silently wins.
 
-自分の accountId は `jira auth status` が出す（`choices` に手で書く場合に使う）。
+Your own accountId is printed by `jira auth status` (useful when hand-writing
+`choices`).
 
-## 課題の作成
+## Creating issues
 
-キーと課題型の対応は設定で決める。型の名前はサイトごとに違う（日本語サイトなら
-日本語）のでコードには置けない。
+The mapping from key to issue type is set in config. Type names differ per site (a
+Japanese-language site uses Japanese names), so they can't be hardcoded.
 
 ```yaml
 create:
@@ -286,33 +316,39 @@ create:
     type: Story
 ```
 
-このキーで下端に枠が出る（gh-dash の "Approve with comment…" と同じ形）。
-`Ctrl+d` で送信、`esc` / `Ctrl+c` で取消 — 枠の中では `enter` が改行になるので、
-使えるキーは枠の下端に書いてある。
+This key opens a box at the bottom of the screen (the same shape as gh-dash's
+"Approve with comment…"). Submit with `Ctrl+d`, cancel with `esc` / `Ctrl+c` — inside
+the box, `enter` inserts a newline, so the usable keys are listed along the box's
+bottom edge.
 
-**打つのはタイトルだけ**。型はキーで決まり、project とスプリントは**カーソル下の行から
-継承する** — だから新しい課題は今見ていたものの隣に落ちる。継承するスプリントは active
-なもの、無ければ future（= 名前付きバックログ）。closed は選ばない: 課題は過去の全
-スプリントを保持するので、リストの最後は現行スプリントではない。
+**Only the title is typed.** The type is fixed by the key, and the project and sprint
+are **inherited from the row under the cursor** — which is why a new issue lands right
+next to the one you were looking at. The inherited sprint is the active one, or if
+there isn't one, the future sprint (i.e. the named backlog). A closed sprint is never
+chosen: issues retain every past sprint they belonged to, so the last entry in the
+list is not necessarily the current sprint.
 
-行が無いタブでは開かない（継承元の project が無い）。空タイトルは送らずに拒否する。
+The box doesn't open on a tab with no rows (there's no project to inherit from). An
+empty title is rejected without being submitted.
 
-入力欄は `create` が1行（`jira create -s` が受けるのは1つの文字列）、`prompt: true`
-のキーは3行。枠の高さは**表から引かれる** — 画面の下に足すのではないので、フッターが
-画面外に落ちない。
+The input field is one line for `create` (`jira create -s` takes a single string
+argument), three lines for `prompt: true` keys. The box's height is **subtracted from
+the table**, not appended below the screen — so the footer never gets pushed off
+screen.
 
-## 設定リファレンス
+## Configuration reference
 
-- **キャッシュ**: セクションの内容は `~/.cache/jira-dash/` にキャッシュされ、まず
-  キャッシュから描画してから裏で最新の内容を取り直す。キーはセクションのタイトルで
-  はなく JQL なので、タブ名を変えてもキャッシュは生き、JQL を変えれば別キーになる
-- **`sprintPrefix`**: セクションにこれを指定すると、JQL で取得した後にスプリント名を
-  前方一致で絞り込む。**そのセクションの `limit` は絞り込む前の件数をカバーする値に
-  する**必要がある
-- **`ORDER BY`**: セクションの JQL には `ORDER BY` を必ず書く。無いと `limit` を超えた
-  分がプロジェクト単位で丸ごと落ちることがある
-- **書き込み系のキーバインド**: jhd 自身が Jira に書き込むのは課題作成のみ。コメント・
-  ステータス・担当者などその他の変更は、すべて設定のキーバインド（シェルコマンド）
-  で行う
+- **Cache**: section contents are cached under `~/.cache/jira-dash/`; the dashboard
+  renders from cache first and then refetches the latest in the background. The cache
+  key is the JQL, not the section title — so renaming a tab keeps the cache alive,
+  while changing the JQL creates a new cache entry
+- **`sprintPrefix`**: setting this on a section filters sprint names by prefix match
+  after the JQL fetch. **That section's `limit` needs to cover the count before
+  filtering**, not after
+- **`ORDER BY`**: a section's JQL must always include `ORDER BY`. Without it, results
+  beyond `limit` can be dropped wholesale on a per-project basis
+- **Write-capable keybindings**: the dashboard itself only ever writes to Jira for
+  issue creation. Everything else — comments, status, assignee, etc. — goes entirely
+  through configured keybindings (shell commands)
 
-各設定の背景にある判断は [docs/adr/](docs/adr/) を参照。
+See [docs/adr/](docs/adr/) for the reasoning behind each of these settings.
