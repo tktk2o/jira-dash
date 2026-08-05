@@ -9,6 +9,43 @@ import (
 	"strings"
 )
 
+// splitArgs separates args into the tokens flag.FlagSet.Parse should see
+// (every flag, plus the following token for any flag that takes a value)
+// and the positional tokens left over, in original order. Go's flag package
+// stops parsing at the first token that does not start with "-", so a
+// positional given before a flag - `get ABC-1 -f json`, the form used
+// throughout this repo's own config and README - silently hides every flag
+// after it; splitting the two apart first lets a caller use either order.
+//
+// valueFlags names every flag (long form, no dashes) that consumes the
+// following argument as its value; anything else starting with "-" is
+// treated as a boolean flag consuming nothing. A flag written as
+// "-f=json"/"--f=json" already carries its value and is left alone too.
+func splitArgs(args []string, valueFlags map[string]bool) (flagArgs, positionals []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		// A bare "-" is the stdin marker used as a flag's value (-B -), never
+		// a flag itself, so it must fall through to the flag that consumed it
+		// above rather than being treated as a positional here. It only
+		// reaches this loop directly when nothing before it claimed it, i.e.
+		// when it is genuinely positional (e.g. a search query of "-").
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			positionals = append(positionals, a)
+			continue
+		}
+		flagArgs = append(flagArgs, a)
+		name := strings.TrimLeft(a, "-")
+		if strings.ContainsRune(name, '=') {
+			continue
+		}
+		if valueFlags[name] && i+1 < len(args) {
+			i++
+			flagArgs = append(flagArgs, args[i])
+		}
+	}
+	return flagArgs, positionals
+}
+
 // readFileOrStdin implements the old CLI's "-D -" / "-B -" convention: a
 // path of "-" means read the body from stdin instead of a file, so a pipe
 // (`git diff | jira comment add ABC-1 -B -`) works without a temp file.

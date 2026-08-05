@@ -32,6 +32,26 @@ func TestEditPassesTheLiteralNullThroughForClearing(t *testing.T) {
 	}
 }
 
+// --no-flag is already its own registered bool flag (Go's flag package has
+// no native "--no-x negates --x" convention, so this program spells the two
+// out separately) - the only thing that made `jira edit ABC-1 --no-flag`
+// fail was the positional key coming before it, defect 1's bug. Both orders
+// must clear the flag identically.
+func TestEditNoFlagWorksWithTheKeyBeforeOrAfterTheFlag(t *testing.T) {
+	for _, args := range [][]string{
+		{"--no-flag", "ABC-1"},
+		{"ABC-1", "--no-flag"},
+	} {
+		fc := &fakeClient{}
+		if err := runEdit(context.Background(), fc, args, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if fc.lastEditInput.Flag == nil || *fc.lastEditInput.Flag != false {
+			t.Errorf("%v: Flag = %v, want a pointer to false", args, fc.lastEditInput.Flag)
+		}
+	}
+}
+
 func TestEditFlagAndNoFlagAreMutuallyExclusive(t *testing.T) {
 	fc := &fakeClient{}
 	if err := runEdit(context.Background(), fc, []string{"--flag", "--no-flag", "ABC-1"}, &bytes.Buffer{}); err == nil {

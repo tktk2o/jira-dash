@@ -59,6 +59,36 @@ func TestRunWithNoArgumentsPrintsUsage(t *testing.T) {
 	if !strings.Contains(stderr.String(), "usage") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
+	// A single "usage:" line leaves a person guessing at every subcommand
+	// name; the old CLI listed them, and this replacement must too.
+	for _, name := range []string{"get", "search", "create", "edit", "comment", "transitions", "users"} {
+		if !strings.Contains(stderr.String(), name) {
+			t.Errorf("stderr does not list subcommand %q: %q", name, stderr.String())
+		}
+	}
+}
+
+// --version and -v must both work, and without ever calling newClient - the
+// old CLI answers this on a machine with no credentials configured at all.
+func TestVersionFlagBothSpellingsNeverBuildAClient(t *testing.T) {
+	for _, arg := range []string{"--version", "-v"} {
+		newClientCalled := false
+		newClient := func() (jiraClient, error) {
+			newClientCalled = true
+			return nil, errCredentialsFailure
+		}
+		var stdout, stderr bytes.Buffer
+		code := run([]string{arg}, &stdout, &stderr, newClient)
+		if code != 0 {
+			t.Errorf("%s: code = %d, stderr = %q", arg, code, stderr.String())
+		}
+		if newClientCalled {
+			t.Errorf("%s: newClient was called", arg)
+		}
+		if stdout.String() == "" {
+			t.Errorf("%s: stdout was empty", arg)
+		}
+	}
 }
 
 // dispatch actually reaches a real subcommand end to end through run, not

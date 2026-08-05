@@ -17,17 +17,18 @@ func runUsersAssignable(ctx context.Context, client jiraClient, args []string, s
 	fs.StringVar(&query, "query", "", "narrow by name/email substring")
 	fs.StringVar(&format, "f", "table", "output format")
 	fs.StringVar(&format, "format", "table", "output format")
-	if err := fs.Parse(args); err != nil {
+	flagArgs, positionals := splitArgs(args, map[string]bool{"q": true, "query": true, "f": true, "format": true})
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
 	f, err := parseFormat(format)
 	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(positionals) != 1 {
 		return fmt.Errorf("usage: jira users assignable <key>")
 	}
-	key := fs.Arg(0)
+	key := positionals[0]
 
 	users, err := client.AssignableUsers(ctx, key, query)
 	if err != nil {

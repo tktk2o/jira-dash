@@ -55,13 +55,24 @@ func parseEditFlags(args []string) (editFlags, string, error) {
 	fs.StringVar(&f.fieldsJSONFile, "fields-json-file", "", "extra fields as a JSON file")
 	fs.StringVar(&f.format, "f", "table", "output format")
 	fs.StringVar(&f.format, "format", "table", "output format")
-	if err := fs.Parse(args); err != nil {
+	flagArgs, positionals := splitArgs(args, map[string]bool{
+		"s": true, "summary": true, "d": true, "description": true,
+		"D": true, "description-file": true, "a": true, "assignee": true,
+		"priority": true, "l": true, "labels": true, "parent": true,
+		"sprint": true, "S": true, "status": true, "e": true, "editor": true,
+		"story-points": true, "team": true, "components": true,
+		"start-date": true, "target-start": true, "due": true,
+		"fix-versions": true, "fields-json": true, "fields-json-file": true,
+		"f": true, "format": true,
+		// "dry-run", "flag", "no-flag" take no value.
+	})
+	if err := fs.Parse(flagArgs); err != nil {
 		return editFlags{}, "", err
 	}
-	if fs.NArg() != 1 {
+	if len(positionals) != 1 {
 		return editFlags{}, "", fmt.Errorf("usage: jira edit <key>")
 	}
-	return f, fs.Arg(0), nil
+	return f, positionals[0], nil
 }
 
 // resolveEditDescription mirrors resolveDescription but returns nil when

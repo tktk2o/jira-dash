@@ -36,6 +36,66 @@ func TestParseFormatAcceptsTableAndJSONAndDefaultsToTable(t *testing.T) {
 	}
 }
 
+// parseGetFormat must accept the old CLI's full four-value set on `get`
+// (table/json/yaml/markdown, per `jira get --help`) and, on anything else,
+// name all four rather than leaving the caller to guess which ones this
+// replacement kept - a bare usage line for a bad -f value gives no hint the
+// format was the problem.
+func TestParseGetFormatAcceptsAllFourOldCLIFormatsAndNamesThemOnError(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want outputFormat
+	}{
+		{"", formatTable},
+		{"table", formatTable},
+		{"json", formatJSON},
+		{"yaml", formatYAML},
+		{"markdown", formatMarkdown},
+	} {
+		got, err := parseGetFormat(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("parseGetFormat(%q) = (%q, %v), want (%q, nil)", tc.in, got, err, tc.want)
+		}
+	}
+
+	_, err := parseGetFormat("nonsense")
+	if err == nil {
+		t.Fatal("want an error for an unknown format")
+	}
+	for _, want := range []string{"table", "json", "yaml", "markdown"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// `jira get -f yaml` and `-f markdown` must each carry the same fields the
+// table view shows, not fall through to it silently - a format flag that
+// parses but renders as something else is as misleading as one that errors
+// on a typo.
+func TestGetYAMLAndMarkdownCarryTheSameFieldsAsTable(t *testing.T) {
+	assignee := "Ada Lovelace"
+	issue := jirapkg.Issue{
+		Key: "ABC-1", Summary: "Fix the thing", Type: "Bug", Status: "In Progress",
+		Assignee: &assignee, Priority: "High", Labels: []string{"urgent"},
+	}
+	for _, format := range []outputFormat{formatYAML, formatMarkdown} {
+		var buf bytes.Buffer
+		if err := writeGetOutput(&buf, format, issue, "the description"); err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		got := buf.String()
+		for _, want := range []string{"ABC-1", "Fix the thing", "Bug", "In Progress", "Ada Lovelace", "High", "urgent", "the description"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: missing %q in %s", format, want, got)
+			}
+		}
+		if strings.HasPrefix(strings.TrimSpace(got), "{") {
+			t.Errorf("%s: output looks like JSON: %s", format, got)
+		}
+	}
+}
+
 // `jira get -f json` must carry every field Issue itself promises, plus
 // description - the one field get fetches that search never does. This is
 // the guarantee the whole task exists for: a script that ran `jq .summary`

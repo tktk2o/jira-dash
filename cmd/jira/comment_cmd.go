@@ -21,17 +21,22 @@ func runCommentAdd(ctx context.Context, client jiraClient, args []string, stdout
 	fs.BoolVar(&dryRun, "dry-run", false, "print the request instead of sending it")
 	fs.StringVar(&format, "f", "table", "output format")
 	fs.StringVar(&format, "format", "table", "output format")
-	if err := fs.Parse(args); err != nil {
+	flagArgs, positionals := splitArgs(args, map[string]bool{
+		"b": true, "body": true, "B": true, "body-file": true,
+		"e": true, "editor": true, "f": true, "format": true,
+		// "dry-run" takes no value.
+	})
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
 	f, err := parseFormat(format)
 	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(positionals) != 1 {
 		return fmt.Errorf("usage: jira comment add <key>")
 	}
-	key := fs.Arg(0)
+	key := positionals[0]
 
 	resolvedBody, err := resolveCommentBody(body, bodyFile, editor)
 	if err != nil {
@@ -82,13 +87,14 @@ func runCommentList(ctx context.Context, client jiraClient, args []string, stdou
 	var max int
 	fs.IntVar(&max, "m", 50, "max results")
 	fs.IntVar(&max, "max-results", 50, "max results")
-	if err := fs.Parse(args); err != nil {
+	flagArgs, positionals := splitArgs(args, map[string]bool{"m": true, "max-results": true})
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(positionals) != 1 {
 		return fmt.Errorf("usage: jira comment list <key>")
 	}
-	key := fs.Arg(0)
+	key := positionals[0]
 
 	comments, err := client.Comments(ctx, key, max)
 	if err != nil {

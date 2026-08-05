@@ -4,24 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	jirapkg "jira-dash/internal/jira"
 )
 
 // outputFormat is the value -f/--format takes on every subcommand that has
-// one. The old CLI also accepted "yaml" and "markdown" on `get`; neither is
-// wired to anything else in this codebase (the TUI only ever asked for
-// json), so they are left out rather than half-supported.
+// one.
 type outputFormat string
 
 const (
-	formatTable outputFormat = "table"
-	formatJSON  outputFormat = "json"
+	formatTable    outputFormat = "table"
+	formatJSON     outputFormat = "json"
+	formatYAML     outputFormat = "yaml"
+	formatMarkdown outputFormat = "markdown"
 )
 
 // parseFormat validates -f/--format's value, defaulting to table exactly
-// like every old-CLI subcommand that has the flag.
+// like every old-CLI subcommand that has the flag. Only `get` also accepts
+// yaml/markdown (see parseGetFormat) - every other subcommand's old-CLI
+// --help lists table/json alone, and adding the other two there would be
+// inventing a capability the tool never had rather than restoring one.
 func parseFormat(s string) (outputFormat, error) {
 	switch outputFormat(s) {
 	case "", formatTable:
@@ -30,6 +34,25 @@ func parseFormat(s string) (outputFormat, error) {
 		return formatJSON, nil
 	default:
 		return "", fmt.Errorf("unknown format %q: want table or json", s)
+	}
+}
+
+// parseGetFormat is `jira get -f`'s own validator: the old CLI's `get
+// --help` lists four formats, not two, and rejecting an unfamiliar value
+// must always name all of them rather than leaving the caller to guess
+// which two this replacement kept.
+func parseGetFormat(s string) (outputFormat, error) {
+	switch outputFormat(s) {
+	case "", formatTable:
+		return formatTable, nil
+	case formatJSON:
+		return formatJSON, nil
+	case formatYAML:
+		return formatYAML, nil
+	case formatMarkdown:
+		return formatMarkdown, nil
+	default:
+		return "", fmt.Errorf("unknown format %q: want table, json, yaml, or markdown", s)
 	}
 }
 
@@ -57,8 +80,13 @@ type getOutput struct {
 }
 
 func writeGetOutput(w io.Writer, format outputFormat, issue jirapkg.Issue, description string) error {
-	if format == formatJSON {
+	switch format {
+	case formatJSON:
 		return writeJSON(w, getOutput{Issue: issue, Description: description})
+	case formatYAML:
+		return writeGetYAML(w, issue, description)
+	case formatMarkdown:
+		return writeGetMarkdown(w, issue, description)
 	}
 	fmt.Fprintf(w, "%s  %s\n", issue.Key, issue.Summary)
 	fmt.Fprintf(w, "Type:     %s\n", issue.Type)
@@ -67,6 +95,64 @@ func writeGetOutput(w io.Writer, format outputFormat, issue jirapkg.Issue, descr
 	fmt.Fprintf(w, "Assignee: %s\n", issue.AssigneeName())
 	if len(issue.Labels) > 0 {
 		fmt.Fprintf(w, "Labels:   %s\n", strings.Join(issue.Labels, ", "))
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, description)
+	return nil
+}
+
+// yamlScalar quotes s only when a bare YAML scalar would parse it as
+// something other than the literal string - a leading/trailing space, a
+// colon-space sequence, or an embedded quote all change meaning unquoted.
+// Handling that subset (rather than pulling in a YAML library, which the
+// migration plan's own constraints forbid) is enough for the values `get`
+// ever prints: issue text, never nested structures.
+func yamlScalar(s string) string {
+	needsQuote := s == "" || strings.ContainsAny(s, ":#\"'\n") ||
+		strings.TrimSpace(s) != s
+	if !needsQuote {
+		return s
+	}
+	return strconv.Quote(s)
+}
+
+// writeGetYAML is `jira get -f yaml`'s output: the same fields the table
+// view shows, plus the description, since yaml (like markdown) is a human
+// format the old CLI offered as an alternative to table, not a second
+// machine format alongside json.
+func writeGetYAML(w io.Writer, issue jirapkg.Issue, description string) error {
+	fmt.Fprintf(w, "key: %s\n", yamlScalar(issue.Key))
+	fmt.Fprintf(w, "summary: %s\n", yamlScalar(issue.Summary))
+	fmt.Fprintf(w, "type: %s\n", yamlScalar(issue.Type))
+	fmt.Fprintf(w, "status: %s\n", yamlScalar(issue.Status))
+	fmt.Fprintf(w, "priority: %s\n", yamlScalar(issue.Priority))
+	fmt.Fprintf(w, "assignee: %s\n", yamlScalar(issue.AssigneeName()))
+	if len(issue.Labels) == 0 {
+		fmt.Fprintln(w, "labels: []")
+	} else {
+		fmt.Fprintln(w, "labels:")
+		for _, l := range issue.Labels {
+			fmt.Fprintf(w, "  - %s\n", yamlScalar(l))
+		}
+	}
+	fmt.Fprintln(w, "description: |")
+	for _, line := range strings.Split(description, "\n") {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
+	return nil
+}
+
+// writeGetMarkdown is `jira get -f markdown`'s output: a heading plus a
+// bullet list of the same fields, the shape a person would paste into a
+// PR description or a chat message.
+func writeGetMarkdown(w io.Writer, issue jirapkg.Issue, description string) error {
+	fmt.Fprintf(w, "# %s: %s\n\n", issue.Key, issue.Summary)
+	fmt.Fprintf(w, "- **Type:** %s\n", issue.Type)
+	fmt.Fprintf(w, "- **Status:** %s\n", issue.Status)
+	fmt.Fprintf(w, "- **Priority:** %s\n", issue.Priority)
+	fmt.Fprintf(w, "- **Assignee:** %s\n", issue.AssigneeName())
+	if len(issue.Labels) > 0 {
+		fmt.Fprintf(w, "- **Labels:** %s\n", strings.Join(issue.Labels, ", "))
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, description)

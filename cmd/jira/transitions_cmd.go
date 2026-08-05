@@ -15,17 +15,18 @@ func runTransitions(ctx context.Context, client jiraClient, args []string, stdou
 	var format string
 	fs.StringVar(&format, "f", "table", "output format")
 	fs.StringVar(&format, "format", "table", "output format")
-	if err := fs.Parse(args); err != nil {
+	flagArgs, positionals := splitArgs(args, map[string]bool{"f": true, "format": true})
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
 	f, err := parseFormat(format)
 	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(positionals) != 1 {
 		return fmt.Errorf("usage: jira transitions <key>")
 	}
-	key := fs.Arg(0)
+	key := positionals[0]
 
 	transitions, err := client.Transitions(ctx, key)
 	if err != nil {

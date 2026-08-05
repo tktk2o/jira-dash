@@ -87,12 +87,19 @@ func runSearch(ctx context.Context, client jiraClient, args []string, stdout io.
 	fs.StringVar(&format, "f", "table", "output format")
 	fs.StringVar(&format, "format", "table", "output format")
 	fs.StringVar(&jql, "jql", "", "raw JQL, overrides the other filters")
-	fs.StringVar(&fields, "fields", "", "additional fields (not implemented, json only)")
-	if err := fs.Parse(args); err != nil {
+	fs.StringVar(&fields, "fields", "", "additional fields (rejected - see the error)")
+	flagArgs, positionals := splitArgs(args, map[string]bool{
+		"p": true, "project": true, "s": true, "status": true,
+		"a": true, "assignee": true, "t": true, "type": true,
+		"L": true, "label": true, "S": true, "sprint": true,
+		"l": true, "limit": true, "f": true, "format": true,
+		"jql": true, "fields": true,
+	})
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
 	if fields != "" {
-		return fmt.Errorf("search --fields is not implemented in this CLI yet")
+		return fmt.Errorf("search --fields is not implemented in this CLI; -f json already includes every field this command fetches")
 	}
 	f, err := parseFormat(format)
 	if err != nil {
@@ -102,8 +109,8 @@ func runSearch(ctx context.Context, client jiraClient, args []string, stdout io.
 	resolvedJQL := jql
 	if resolvedJQL == "" {
 		var query string
-		if fs.NArg() > 0 {
-			query = fs.Arg(0)
+		if len(positionals) > 0 {
+			query = positionals[0]
 		}
 		resolvedJQL = buildSearchJQL(query, project, status, assignee, issueType, label, sprint)
 		if resolvedJQL == "" {
