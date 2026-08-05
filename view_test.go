@@ -535,8 +535,15 @@ func TestViewNeverDrawsMoreLinesThanTheTerminalHas(t *testing.T) {
 	base := func(t *testing.T) Model {
 		m := newTestModel(t, fakeSearcher{})
 		m.cfg.Create = []CreateKey{{Key: "c", Type: "Task"}}
+		// Twelve choices against a cap of eight, so the picker case below is also
+		// the proof that a long list scrolls instead of growing its box.
+		long := make([]Choice, 0, 12)
+		for i := 0; i < 12; i++ {
+			long = append(long, Choice{Value: "status " + strconv.Itoa(i)})
+		}
 		m.cfg.Keybindings.Issues = []Keybinding{
 			{Key: "a", Name: "ask", Prompt: true, Command: "true"},
+			{Key: "s", Name: "status", Choices: long, Command: "true"},
 		}
 		keys := make([]string, 0, 80)
 		for i := 0; i < 80; i++ {
@@ -555,6 +562,8 @@ func TestViewNeverDrawsMoreLinesThanTheTerminalHas(t *testing.T) {
 		{"create box", []string{"c"}},
 		{"ask box", []string{"a"}},
 		{"ask box and help", []string{"?", "a"}},
+		{"picker", []string{"s"}},
+		{"picker and help", []string{"?", "s"}},
 		{"filter", []string{"/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

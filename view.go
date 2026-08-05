@@ -54,6 +54,10 @@ const (
 	// An instruction is worth more room: "do X, and note Y" is two thoughts, and
 	// on one line you cannot see the first while typing the second.
 	askInputHeight = 3
+	// The picker shows its whole list where it can. The cap is what stops a long
+	// one from eating the table: past it the list scrolls, the same way the table
+	// does.
+	chooseMaxHeight = 8
 )
 
 // Two colours gh-dash uses that the theme config has no name for: the blue it
@@ -542,25 +546,67 @@ func newPromptInput(t Theme) textarea.Model {
 // The keys are named in the box rather than left to the help, because they are
 // not the keys that work anywhere else - enter inserts a newline here, and the
 // only way out is stated on the line above the border.
-func renderPromptBox(m Model, title, keys string, width int) string {
+// The body is passed in rather than read off the model, because the two boxes
+// hold different things - an input for typing, a list for picking - and the frame
+// around them is the only part they share.
+func renderPromptBox(m Model, title, inner string, keys string, width int) string {
 	st := newStyles(m.cfg.Theme)
 	// 2 for the border's own columns, 2 for the padding inside it.
-	inner := max(0, width-4)
+	innerWidth := max(0, width-4)
 
 	body := strings.Join([]string{
-		st.header.Render(Truncate(title, inner)),
+		st.header.Render(Truncate(title, innerWidth)),
 		"",
-		m.prompt.View(),
+		inner,
 		"",
-		st.footer.Render(Truncate(keys, inner)),
+		st.footer.Render(Truncate(keys, innerWidth)),
 	}, "\n")
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Border.Primary, "#bd93f9"))).
 		Padding(0, 1).
-		Width(inner).
+		Width(innerWidth).
 		Render(body)
+}
+
+// choosePromptTitle names the issue the picked value will be set on, for the same
+// reason the ask box does: the row may have scrolled out of the window.
+func choosePromptTitle(m Model) string {
+	label := "choose"
+	for _, kb := range m.cfg.Keybindings.Issues {
+		if kb.Key == m.chooseKey {
+			label = orDefault(kb.Name, "choose")
+		}
+	}
+	key := "?"
+	if row, ok := m.sections[m.active].selected(); ok {
+		key = row.Key
+	}
+	return fmt.Sprintf("%s on %s…", label, key)
+}
+
+// renderChoices is the picker's body: the list, windowed the same way the table
+// is, with the entry under the cursor filled to the pane's edge so it reads as
+// the selected row it is.
+func renderChoices(m Model, width int) string {
+	st := newStyles(m.cfg.Theme)
+	lines := make([]string, 0, len(m.chooseList))
+	for i, c := range m.chooseList {
+		style := st.row
+		if i == m.chooseCursor {
+			style = st.selectedRow
+		}
+		lines = append(lines,
+			style.Render(runewidth.FillRight("  "+Truncate(c.Name(), max(0, width-2)), width)))
+	}
+	return strings.Join(windowRows(lines, m.chooseCursor, chooseHeight(len(m.chooseList))), "\n")
+}
+
+// chooseHeight is how many entries the box shows. Capped so that a long list
+// cannot push the table off the screen; beyond the cap the list scrolls.
+func chooseHeight(n int) int {
+	return min(max(n, 1), chooseMaxHeight)
 }
 
 // View draws the whole frame from the model alone, top to bottom: the tabs, the
@@ -608,12 +654,20 @@ func (m Model) View() string {
 	promptLine, prompting := "", true
 	switch {
 	case m.creating:
-		promptLine = renderPromptBox(m, createPromptTitle(m),
+		promptLine = renderPromptBox(m, createPromptTitle(m), m.prompt.View(),
 			"Ctrl+d submit ⋅ esc cancel", tableWidth)
 		prompting = false
 	case m.asking:
-		promptLine = renderPromptBox(m, askPromptTitle(m),
+		promptLine = renderPromptBox(m, askPromptTitle(m), m.prompt.View(),
 			"Ctrl+d submit ⋅ enter newline ⋅ esc cancel", tableWidth)
+		prompting = false
+	case m.choosing:
+		promptLine = renderPromptBox(m, choosePromptTitle(m),
+			// 2 for the border and 2 for the padding, as renderPromptBox counts
+			// them, and 2 more for the padding lipgloss adds inside the width it was
+			// given: a line as wide as the box wraps, and each entry became two.
+			renderChoices(m, max(0, tableWidth-6)),
+			"enter select ⋅ j/k move ⋅ esc cancel", tableWidth)
 		prompting = false
 	case m.filtering:
 		promptLine = "/" + m.filterDraft
@@ -673,6 +727,8 @@ func (m Model) promptLines() int {
 		return promptBoxChrome + createInputHeight
 	case m.asking:
 		return promptBoxChrome + askInputHeight
+	case m.choosing:
+		return promptBoxChrome + chooseHeight(len(m.chooseList))
 	case m.filtering, m.sections[m.active].filter != "":
 		// The filter stays one line. It is a phrase, not a message, and a box
 		// around it would take eight lines of the list to hold six characters.
@@ -764,19 +820,45 @@ func (m Model) copySelected(field func(Issue) string) tea.Cmd {
 // runUserKeybinding runs a command from the config. The dashboard itself never
 // writes to Jira; anything that changes state goes through here.
 //
-// A key that declared prompt: true does not run yet - it opens the ask prompt,
-// and comes back through runUserKeybindingWith once there is an instruction.
+// A key that declared prompt: true or a choices list does not run yet - it opens
+// the box, and comes back through runUserKeybindingWith or
+// runUserKeybindingWithChoice once there is something to substitute.
 func (m Model) runUserKeybinding(key string) (tea.Model, tea.Cmd) {
 	for _, kb := range m.cfg.Keybindings.Issues {
-		if kb.Key == key && kb.Prompt {
+		if kb.Key != key {
+			continue
+		}
+		switch {
+		case kb.Prompt:
 			return m.openAskPrompt(key)
+		case len(kb.Choices) > 0, kb.ChoicesFrom != "":
+			return m.openChoosePrompt(kb)
 		}
 	}
 	return m.runUserKeybindingWith(key, "")
 }
 
-// runUserKeybindingWith is the same, with an instruction to put in {{.Prompt}}.
+// runUserKeybindingWith is the same, with an instruction to put in {{.Prompt}}
+// and {{.Input}}.
 func (m Model) runUserKeybindingWith(key, instruction string) (tea.Model, tea.Cmd) {
+	return m.runConfigured(key, func(issue Issue, vars IssueVars) IssueVars {
+		if instruction == "" {
+			return vars
+		}
+		return NewAskVars(issue, AskPrompt(issue, m.detailBody, instruction), instruction)
+	})
+}
+
+// runUserKeybindingWithChoice is the same, with a picked value for {{.Choice}}.
+func (m Model) runUserKeybindingWithChoice(key, value string) (tea.Model, tea.Cmd) {
+	return m.runConfigured(key, func(_ Issue, vars IssueVars) IssueVars {
+		return vars.WithChoice(value)
+	})
+}
+
+// runConfigured finds the keybinding, lets the caller fill in whatever the box it
+// came from collected, and hands the rendered command to the shell.
+func (m Model) runConfigured(key string, fill func(Issue, IssueVars) IssueVars) (tea.Model, tea.Cmd) {
 	issue, ok := m.sections[m.active].selected()
 	if !ok {
 		return m, nil
@@ -785,10 +867,7 @@ func (m Model) runUserKeybindingWith(key, instruction string) (tea.Model, tea.Cm
 		if kb.Key != key {
 			continue
 		}
-		vars := NewIssueVars(issue)
-		if instruction != "" {
-			vars = NewAskVars(issue, AskPrompt(issue, m.detailBody, instruction), instruction)
-		}
+		vars := fill(issue, NewIssueVars(issue))
 		dir := m.sections[m.active].cfg.Dir
 		rendered, err := RenderCommand(kb.Command, vars.WithDir(dir))
 		if err != nil {

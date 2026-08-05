@@ -93,6 +93,18 @@ type Keybinding struct {
 	// {{.Input}}. Without it the key runs at once, which is the right shape for a
 	// fixed command like opening a browser.
 	Prompt bool `yaml:"prompt"`
+	// Choices makes the key open a picker instead of running at once, and puts
+	// the chosen entry's value in {{.Choice}}. For a field whose accepted values
+	// are a short fixed set - an assignee, a priority - a list you pick from beats
+	// a line you type: the values are account ids and site-specific status names,
+	// which are not things anyone types correctly from memory.
+	Choices []Choice `yaml:"choices"`
+	// ChoicesFrom builds the picker from the dashboard's own state instead of from
+	// the config. Only "statuses" exists - the status names the current tab's rows
+	// have - because that is the only such list jhd holds. The jira CLI resolves a
+	// status name to a transition itself, but offers no way to list them, so this
+	// is as close to the real transitions as jhd can get without its own API call.
+	ChoicesFrom string `yaml:"choicesFrom"`
 	// Refresh reloads the preview once the command exits without error, for a key
 	// that changed the issue - a posted comment is otherwise invisible until the
 	// cursor leaves the row and comes back. Opt-in because the dashboard cannot
@@ -100,6 +112,22 @@ type Keybinding struct {
 	// reload costs two ~360ms jira calls.
 	Refresh bool `yaml:"refresh"`
 }
+
+// Choice is one line of a picker. Label is what the box shows and Value is what
+// the command receives, because the two differ for exactly the values a picker
+// is worth having: an assignee is picked as a name and sent as an account id.
+// A label-less entry shows its value, which is right for a status name.
+type Choice struct {
+	Label string `yaml:"label"`
+	Value string `yaml:"value"`
+}
+
+// Name is what the picker draws for this entry.
+func (c Choice) Name() string { return orDefault(c.Label, c.Value) }
+
+// choicesFromStatuses is the only ChoicesFrom source there is. Named so the
+// check that accepts it and the code that reads it cannot drift apart.
+const choicesFromStatuses = "statuses"
 
 // Theme is the colours the dashboard draws in. Every field is optional: an
 // unset colour falls back to the Dracula shade the layout was designed against.
@@ -214,8 +242,36 @@ func LoadConfig(path string) (*Config, error) {
 		if err := claimKey(path, claimed, k.Key, "keybinding"); err != nil {
 			return nil, err
 		}
+		// A key opens one thing. Two of these set means the config asked for both a
+		// typed instruction and a picker, and whichever handleKey looked at first
+		// would win silently.
+		if n := countTrue(k.Prompt, len(k.Choices) > 0, k.ChoicesFrom != ""); n > 1 {
+			return nil, fmt.Errorf(
+				"%s: keybinding %q sets more than one of prompt, choices and choicesFrom", path, k.Key)
+		}
+		if k.ChoicesFrom != "" && k.ChoicesFrom != choicesFromStatuses {
+			return nil, fmt.Errorf("%s: keybinding %q has unknown choicesFrom %q (only %q)",
+				path, k.Key, k.ChoicesFrom, choicesFromStatuses)
+		}
+		for j, c := range k.Choices {
+			// A value-less entry would send an empty argument, which for `jira edit`
+			// is not "leave it alone" but a request it cannot answer.
+			if c.Value == "" {
+				return nil, fmt.Errorf("%s: keybinding %q choices[%d] has no value", path, k.Key, j)
+			}
+		}
 	}
 	return &c, nil
+}
+
+func countTrue(bs ...bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
 }
 
 // claimKey refuses a key the dashboard already owns, or that another config

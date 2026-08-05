@@ -279,6 +279,60 @@ func TestConfigRefusesADirThatIsAFile(t *testing.T) {
 	}
 }
 
+// A key opens one thing. With two of these set, whichever runUserKeybinding
+// looked at first would win and the other would be silently dead config.
+func TestConfigRefusesAKeyThatWantsBothAPromptAndAPicker(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, `jiraSections:
+  - title: A
+    jql: project = A
+keybindings:
+  issues:
+    - key: s
+      command: "true"
+      prompt: true
+      choices:
+        - value: To Do
+`))
+	if err == nil || !strings.Contains(err.Error(), "more than one") {
+		t.Fatalf("want a refusal for prompt and choices together, got %v", err)
+	}
+}
+
+// A misspelled source would otherwise open an empty picker, which reads as a key
+// that is broken rather than as a config that is wrong.
+func TestConfigRefusesAnUnknownChoicesFrom(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, `jiraSections:
+  - title: A
+    jql: project = A
+keybindings:
+  issues:
+    - key: s
+      command: "true"
+      choicesFrom: assignees
+`))
+	if err == nil || !strings.Contains(err.Error(), "choicesFrom") {
+		t.Fatalf("want a refusal for an unknown choicesFrom, got %v", err)
+	}
+}
+
+// An entry with no value would send an empty argument, which for `jira edit` is
+// not "leave it alone" but a request it cannot answer.
+func TestConfigRefusesAChoiceWithNoValue(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, `jiraSections:
+  - title: A
+    jql: project = A
+keybindings:
+  issues:
+    - key: s
+      command: "true"
+      choices:
+        - label: 未設定
+`))
+	if err == nil || !strings.Contains(err.Error(), "no value") {
+		t.Fatalf("want a refusal for a value-less choice, got %v", err)
+	}
+}
+
 // The README's install path is to copy this file, so a template that cannot load
 // is a broken first run. It has failed that way once already: an example
 // defaults.dir pointing at a path that exists on nobody's machine, checked at

@@ -128,6 +128,15 @@ type Model struct {
 	asking bool
 	askKey string
 
+	// The picker a keybinding with choices opens. The list is resolved when the
+	// box opens rather than read from the config as it draws, because a
+	// choicesFrom list is derived from the rows and would otherwise change under
+	// the cursor while the box is up.
+	choosing     bool
+	chooseKey    string
+	chooseList   []Choice
+	chooseCursor int
+
 	// prompt is the input both boxes share. One textarea rather than a draft
 	// string each: it is what gives the box line numbers, a cursor that moves,
 	// and multi-line editing, none of which a string accumulating runes had.
@@ -329,9 +338,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = ""
 		if msg.refresh {
-			// The same debounced path a cursor move takes, so a comment posted from
-			// the box shows up in the pane without an r.
-			return m, m.selectionChanged()
+			// The row as well as the pane: a status or an assignee shows in the
+			// table's own columns, and a comment shows in the preview, and from here
+			// the two are indistinguishable. The rows are not blanked the way r does
+			// it - this is a refetch behind a change you just made, not a reload you
+			// asked to watch. fetchedMsg re-arms the preview load on arrival.
+			s := &m.sections[m.active]
+			s.loading = true
+			return m, tea.Batch(fetchSection(m.searcher, m.active, s.cfg), m.spinner.Tick)
 		}
 		return m, nil
 
@@ -392,6 +406,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.asking {
 		return m.handleAskKey(msg)
+	}
+	if m.choosing {
+		return m.handleChooseKey(msg)
 	}
 
 	// Any key other than a second g disarms the gg motion. This has to happen
@@ -525,6 +542,74 @@ func (m Model) handleAskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m.updatePrompt(msg)
+}
+
+// openChoosePrompt opens the picker for a keybinding with choices. The list is
+// resolved here, once, so that an empty one is reported as the config problem or
+// the empty tab it is, rather than as a box with nothing in it.
+func (m Model) openChoosePrompt(kb Keybinding) (tea.Model, tea.Cmd) {
+	if _, ok := m.sections[m.active].selected(); !ok {
+		m.status = "nothing to change: this section has no rows"
+		return m, nil
+	}
+	list := kb.Choices
+	if kb.ChoicesFrom == choicesFromStatuses {
+		list = m.sectionStatuses()
+	}
+	if len(list) == 0 {
+		m.status = kb.Key + ": no choices to pick from"
+		return m, nil
+	}
+	m.choosing = true
+	m.chooseKey = kb.Key
+	m.chooseList = list
+	m.chooseCursor = 0
+	return m, nil
+}
+
+// sectionStatuses is the choicesFrom: statuses list - the status names the rows
+// in view actually carry, in the order they first appear so the list is stable
+// between openings rather than reordering itself as the cursor moves.
+//
+// The limit is real and worth knowing: a status no current row has is not
+// offered, so on a tab where nothing is finished there is no "Done" to pick.
+func (m Model) sectionStatuses() []Choice {
+	seen := map[string]bool{}
+	var out []Choice
+	for _, i := range m.sections[m.active].visible() {
+		if i.Status == "" || seen[i.Status] {
+			continue
+		}
+		seen[i.Status] = true
+		out = append(out, Choice{Value: i.Status})
+	}
+	return out
+}
+
+func (m Model) handleChooseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		m.chooseCursor = min(m.chooseCursor+1, len(m.chooseList)-1)
+		return m, nil
+	case "k", "up":
+		m.chooseCursor = max(m.chooseCursor-1, 0)
+		return m, nil
+	case "enter":
+		key, value := m.chooseKey, m.chooseList[m.chooseCursor].Value
+		m.closeChoosePrompt()
+		return m.runUserKeybindingWithChoice(key, value)
+	case "esc", "ctrl+c":
+		m.closeChoosePrompt()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) closeChoosePrompt() {
+	m.choosing = false
+	m.chooseKey = ""
+	m.chooseList = nil
+	m.chooseCursor = 0
 }
 
 // AskPrompt assembles what the configured command receives as {{.Prompt}}: the

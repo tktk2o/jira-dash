@@ -31,6 +31,9 @@ type IssueVars struct {
 	// alone - the issue is already the thing being commented on, and repeating it
 	// into the comment body would publish it to Jira.
 	Input string
+	// Choice is the value of the entry picked from a choices list, empty for every
+	// other key.
+	Choice string
 	// Dir is the active section's working directory. Commands that spawn something
 	// elsewhere need it as an argument rather than as an inherited cwd: `tmux
 	// new-window` takes the cwd from -c, not from the process that ran it.
@@ -49,6 +52,13 @@ func (v IssueVars) WithDir(dir string) IssueVars {
 	return v
 }
 
+// WithChoice returns the vars with the picked value filled in. Quoted like every
+// other value: a status name has spaces in it on most sites.
+func (v IssueVars) WithChoice(value string) IssueVars {
+	v.Choice = shellQuote(value)
+	return v
+}
+
 // NewAskVars is NewIssueVars plus what the ask prompt produced. Both go through
 // the same quoting: a prompt carries an issue title and a description, which are
 // free text written by whoever filed the issue, and it is about to become a shell
@@ -63,9 +73,10 @@ func NewAskVars(i Issue, prompt, input string) IssueVars {
 		ProjectKey: shellQuote(i.Project.Key),
 		Prompt:     shellQuote(prompt),
 		Input:      shellQuote(input),
-		// Quoted even when empty, so a command using it in a place that needs an
+		// Quoted even when empty, so a command using one in a place that needs an
 		// argument gets '' rather than nothing at all and a shifted argv.
-		Dir: shellQuote(""),
+		Dir:    shellQuote(""),
+		Choice: shellQuote(""),
 	}
 }
 

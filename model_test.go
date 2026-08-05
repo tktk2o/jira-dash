@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -706,6 +707,160 @@ func TestInputCarriesTheTypedTextWithoutTheIssue(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("%q leaked into {{.Input}}: %q", unwanted, got)
 		}
+	}
+}
+
+// chooseTestModel is a model with one choices keybinding and one derived from the
+// rows, over three issues whose statuses repeat.
+func chooseTestModel(t *testing.T) Model {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Keybindings.Issues = []Keybinding{{
+		Key: "A", Name: "assign", Command: "jira edit {{.IssueKey}} -a {{.Choice}}",
+		Choices: []Choice{{Label: "自分", Value: "642a"}, {Label: "解除", Value: "null"}},
+	}, {
+		Key: "s", Name: "status", ChoicesFrom: choicesFromStatuses,
+		Command: "jira edit {{.IssueKey}} -S {{.Choice}}",
+	}}
+	rows := issues("ABC-1", "ABC-2", "ABC-3")
+	rows[0].Status, rows[1].Status, rows[2].Status = "進行中", "To Do", "進行中"
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: rows, at: fixedNow()()})
+	return settled(next.(Model))
+}
+
+// A choices key must not run on the keypress: the value is the whole point, and
+// `jira edit -a` with nothing to set is not a command worth sending.
+func TestChoicesKeyOpensAPickerInsteadOfRunning(t *testing.T) {
+	m := chooseTestModel(t)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	m = next.(Model)
+
+	if !m.choosing {
+		t.Fatal("the picker should be open")
+	}
+	if cmd != nil {
+		t.Error("nothing should run until a choice has been made")
+	}
+	view := plain(m.View())
+	for _, want := range []string{"assign on ABC-1", "自分", "解除", "enter select"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the picker should show %q: %q", want, view)
+		}
+	}
+}
+
+// The label is what you pick and the value is what gets sent, because for an
+// assignee the two are a name and an account id.
+func TestPickerShowsLabelsAndSendsValues(t *testing.T) {
+	m := chooseTestModel(t)
+	m = press(m, "A")
+
+	if got := plain(m.View()); strings.Contains(got, "642a") {
+		t.Errorf("the account id should not be on screen: %q", got)
+	}
+
+	vars := NewIssueVars(Issue{Key: "ABC-1"}).WithChoice("null")
+	got, err := RenderCommand("jira edit {{.IssueKey}} -a {{.Choice}}", vars)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "'null'") {
+		t.Errorf("the picked value is missing or unquoted: %q", got)
+	}
+}
+
+// A status name has spaces in it on most sites, and the command is run through
+// `sh -c`.
+func TestPickedValueIsShellQuoted(t *testing.T) {
+	vars := NewIssueVars(Issue{Key: "ABC-1"}).WithChoice(`In Progress'; rm -rf ~ #`)
+
+	got, err := RenderCommand("jira edit {{.IssueKey}} -S {{.Choice}}", vars)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	body := strings.TrimPrefix(got, "jira edit 'ABC-1' -S ")
+	if !strings.HasPrefix(body, "'") || !strings.HasSuffix(body, "'") {
+		t.Fatalf("the value was not quoted: %s", got)
+	}
+	if strings.Contains(strings.ReplaceAll(body[1:len(body)-1], `'\''`, ""), "'") {
+		t.Errorf("quoting was broken out of: %s", got)
+	}
+}
+
+func TestPickerMovesAndRunsAndCancels(t *testing.T) {
+	m := press(chooseTestModel(t), "A")
+
+	m = press(m, "j")
+	if m.chooseCursor != 1 {
+		t.Fatalf("cursor = %d, want 1", m.chooseCursor)
+	}
+	// The cursor stops at the ends rather than wrapping, the way the table's does.
+	m = press(press(m, "j"), "j")
+	if m.chooseCursor != 1 {
+		t.Errorf("cursor ran past the last entry: %d", m.chooseCursor)
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	after := next.(Model)
+	if after.choosing {
+		t.Error("enter should close the picker")
+	}
+	if cmd == nil {
+		t.Error("enter should run the command")
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if next.(Model).choosing {
+		t.Error("esc should close the picker")
+	}
+}
+
+// choicesFrom: statuses is the only list jhd can derive, and it is worth knowing
+// exactly what it is: the statuses the rows in view carry, deduplicated, in the
+// order they first appear. A status no row has is not offered.
+func TestStatusChoicesComeFromTheRowsInView(t *testing.T) {
+	m := press(chooseTestModel(t), "s")
+
+	var got []string
+	for _, c := range m.chooseList {
+		got = append(got, c.Value)
+	}
+	if want := []string{"進行中", "To Do"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("choices = %v, want %v", got, want)
+	}
+}
+
+// An empty tab has no row to derive statuses from, and nothing to set them on.
+func TestPickerRefusesWhenThereIsNothingToPickFrom(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Keybindings.Issues = []Keybinding{{
+		Key: "s", Name: "status", ChoicesFrom: choicesFromStatuses, Command: "true",
+	}}
+	next, _ := m.Update(fetchedMsg{idx: 0, at: fixedNow()()})
+	m = settled(next.(Model))
+
+	m = press(m, "s")
+
+	if m.choosing {
+		t.Error("the picker should not open with nothing to pick")
+	}
+	if m.status == "" {
+		t.Error("refusing silently leaves the key looking broken")
+	}
+}
+
+// The box has to be exactly as tall as promptLines says, because that is what the
+// table's height is calculated from. It has been wrong once: an entry filled to
+// the box's own width wrapped inside lipgloss's padding, and every line in the
+// list became two.
+func TestPickerBoxIsAsTallAsTheLayoutWasToldItIs(t *testing.T) {
+	m := press(chooseTestModel(t), "A")
+
+	box := renderPromptBox(m, choosePromptTitle(m),
+		renderChoices(m, max(0, m.tableWidth()-6)), "enter select", m.tableWidth())
+
+	if got, want := strings.Count(box, "\n")+1, m.promptLines(); got != want {
+		t.Errorf("the box drew %d lines, promptLines says %d", got, want)
 	}
 }
 
