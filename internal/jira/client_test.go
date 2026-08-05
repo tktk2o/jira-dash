@@ -11,9 +11,13 @@ import (
 
 // newTestClient builds a Client whose base URL points at an httptest.Server
 // instead of api.atlassian.com, with a fixed email/token so assertions on
-// the Authorization header do not depend on LoadCredentials.
+// the Authorization header do not depend on LoadCredentials. HOME is
+// redirected to a fresh t.TempDir() so that FieldIDs' on-disk cache
+// (~/.cache/jira-dash) never touches this machine's real cache or leaks
+// between tests that all share the zero-value CloudID.
 func newTestClient(t *testing.T, serverURL string) *Client {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	return &Client{
 		creds:   Credentials{Email: "a@example.com", APIToken: "tok"},
 		http:    &http.Client{},

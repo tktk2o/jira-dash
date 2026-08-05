@@ -25,6 +25,30 @@ type rawFields struct {
 	Parent      *rawIssueRef    `json:"parent"`
 	Labels      []string        `json:"labels"`
 	Description json.RawMessage `json:"description"`
+
+	// extra holds every field Jira sent, keyed by its raw JSON name. The
+	// sprint field's key is a customfield_NNNNN id that differs per site
+	// (see fields.go), so it cannot get a struct tag of its own; this is how
+	// toIssue reaches it after FieldIDs has resolved which key that is.
+	extra map[string]json.RawMessage
+}
+
+// UnmarshalJSON decodes the named fields above exactly as a plain struct tag
+// would, and additionally keeps the whole object around in extra. A second
+// json.Unmarshal pass into a map might look wasteful, but /issue and
+// /search/jql responses are a few KB - the alternative, a hand-written
+// decoder for a customfield_NNNNN key nobody can name in this source, is not
+// worth it.
+func (r *rawFields) UnmarshalJSON(b []byte) error {
+	// A distinct named type: aliasing rawFields directly would recurse into
+	// this same method forever.
+	type plain rawFields
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*r = rawFields(p)
+	return json.Unmarshal(b, &r.extra)
 }
 
 type rawNamed struct {
@@ -55,7 +79,13 @@ type rawIssue struct {
 // carried since the TypeScript CLI: same JSON tags, so the TUI's parser and
 // `-f json` need not change to read a response built here instead of shelled
 // out to `jira get`.
-func (r rawIssue) toIssue() Issue {
+//
+// fieldIDs.Sprint names which customfield_NNNNN key in r.Fields.extra holds
+// the sprint field, since that id is resolved per site rather than known at
+// compile time (see fields.go). An empty Sprint id - a site with no sprint
+// field configured - leaves Issue.Sprint nil, which CurrentSprint and
+// InActiveSprintPrefix already treat as "not in a sprint".
+func (r rawIssue) toIssue(fieldIDs FieldIDs) Issue {
 	var issue Issue
 	issue.Key = r.Key
 	issue.Summary = r.Fields.Summary
@@ -81,6 +111,14 @@ func (r rawIssue) toIssue() Issue {
 	}
 	issue.Updated = r.Fields.Updated
 	issue.Labels = r.Fields.Labels
+	if fieldIDs.Sprint != "" {
+		if raw, ok := r.Fields.extra[fieldIDs.Sprint]; ok {
+			// A malformed sprint value should not fail the whole issue -
+			// the rest of Issue decoded fine, and a blank sprint column
+			// beats losing the row entirely.
+			_ = json.Unmarshal(raw, &issue.Sprint)
+		}
+	}
 	return issue
 }
 
@@ -102,12 +140,29 @@ var issueFields = []string{
 	"priority", "updated", "parent", "labels", "description",
 }
 
+// requestedFields is what one /issue or /search/jql call must ask for: the
+// fixed set every response needs, plus the sprint custom field when this
+// site has one. Built fresh per call rather than once, because fieldIDs
+// comes from a per-client cache that a test (or a re-login) can change
+// between calls.
+func requestedFields(fieldIDs FieldIDs) []string {
+	fields := append([]string(nil), issueFields...)
+	if fieldIDs.Sprint != "" {
+		fields = append(fields, fieldIDs.Sprint)
+	}
+	return fields
+}
+
 // Issue fetches one issue by key. The description comes back rendered to
 // Markdown (see IssueDescription) rather than as a second field on Issue,
 // since Issue's JSON shape is the one the TUI and `-f json` both already
 // depend on and this task does not touch it.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
-	q := "?fields=" + strings.Join(issueFields, ",")
+	fieldIDs, err := c.FieldIDs(ctx)
+	if err != nil {
+		return Issue{}, err
+	}
+	q := "?fields=" + strings.Join(requestedFields(fieldIDs), ",")
 	var raw rawIssue
 	if err := c.do(ctx, http.MethodGet, "/issue/"+key+q, nil, &raw); err != nil {
 		return Issue{}, err
@@ -115,7 +170,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Key == "" {
 		raw.Key = key
 	}
-	return raw.toIssue(), nil
+	return raw.toIssue(fieldIDs), nil
 }
 
 // IssueDescription fetches one issue and returns only its description,
@@ -150,6 +205,12 @@ type searchJQLResponse struct {
 // replaced the deprecated /search. It pages until limit issues have been
 // collected or the token runs out, whichever comes first.
 func (c *Client) Search(ctx context.Context, jql string, limit int) ([]Issue, error) {
+	fieldIDs, err := c.FieldIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fields := requestedFields(fieldIDs)
+
 	var issues []Issue
 	pageToken := ""
 	for {
@@ -159,7 +220,7 @@ func (c *Client) Search(ctx context.Context, jql string, limit int) ([]Issue, er
 		}
 		req := searchJQLRequest{
 			JQL:           jql,
-			Fields:        issueFields,
+			Fields:        fields,
 			MaxResults:    pageSize,
 			NextPageToken: pageToken,
 		}
@@ -168,7 +229,7 @@ func (c *Client) Search(ctx context.Context, jql string, limit int) ([]Issue, er
 			return nil, err
 		}
 		for _, raw := range resp.Issues {
-			issues = append(issues, raw.toIssue())
+			issues = append(issues, raw.toIssue(fieldIDs))
 			if len(issues) == limit {
 				return issues, nil
 			}

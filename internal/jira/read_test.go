@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,10 @@ import (
 // column in the TUI rather than error.
 func TestClientIssueMapsJiraFieldsOntoIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if got := r.URL.Path; got != "/rest/api/3/issue/ABC-1" {
 			t.Errorf("path = %q", got)
 		}
@@ -58,7 +63,11 @@ func TestClientIssueMapsJiraFieldsOntoIssue(t *testing.T) {
 // an empty string - Issue.AssigneeName() only reads "-" for a nil pointer,
 // so the wrong shape here would render a blank cell instead of a dash.
 func TestClientIssueLeavesAssigneeNilWhenUnassigned(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"key":"ABC-2","fields":{"summary":"x","assignee":null}}`))
 	}))
 	defer srv.Close()
@@ -92,12 +101,80 @@ func TestClientIssueDescriptionRendersADFToMarkdown(t *testing.T) {
 	}
 }
 
+// Issue must decode the sprint custom field into Issue.Sprint using the id
+// FieldIDs resolved, and must request that id explicitly - Jira returns
+// nothing beyond key for a customfield_NNNNN nobody asked for, sprint
+// included.
+func TestClientIssueDecodesTheResolvedSprintField(t *testing.T) {
+	var gotFieldsParam string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[{"id":"customfield_10020","name":"Sprint","untranslatedName":"Sprint"}]`))
+			return
+		}
+		gotFieldsParam = r.URL.Query().Get("fields")
+		_, _ = w.Write([]byte(`{"key":"ABC-4","fields":{
+			"summary": "s",
+			"customfield_10020": [
+				{"id": 1, "name": "Sprint 1", "state": "closed", "boardId": 9},
+				{"id": 2, "name": "Sprint 2", "state": "active", "boardId": 9}
+			]
+		}}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Issue(context.Background(), "ABC-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotFieldsParam, "customfield_10020") {
+		t.Fatalf("requested fields = %q, want it to include the resolved sprint id", gotFieldsParam)
+	}
+	if len(got.Sprint) != 2 || got.Sprint[1].Name != "Sprint 2" || got.Sprint[1].State != "active" {
+		t.Fatalf("Sprint = %+v", got.Sprint)
+	}
+	current, ok := got.CurrentSprint()
+	if !ok || current.Name != "Sprint 2" {
+		t.Errorf("CurrentSprint() = %+v, %v, want the active sprint", current, ok)
+	}
+}
+
+// A site with no sprint field configured must decode the rest of the issue
+// normally and simply leave Sprint empty - failing the whole fetch over a
+// field this site never had would break every user who never asked for
+// sprints.
+func TestClientIssueLeavesSprintEmptyWhenTheSiteHasNoSprintField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"key":"ABC-5","fields":{"summary":"no sprints here"}}`))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv.URL).Issue(context.Background(), "ABC-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sprint != nil {
+		t.Errorf("Sprint = %+v, want nil", got.Sprint)
+	}
+	if _, ok := got.CurrentSprint(); ok {
+		t.Error("CurrentSprint() should report false when there is no sprint field")
+	}
+}
+
 // Search must send an explicit fields list - /search/jql returns bare keys
 // with no error if fields is omitted, which would look like every issue
 // lost its summary and status rather than like a request bug.
 func TestClientSearchSendsAnExplicitFieldsList(t *testing.T) {
 	var gotFields []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		var body searchJQLRequest
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotFields = body.Fields
@@ -119,6 +196,10 @@ func TestClientSearchSendsAnExplicitFieldsList(t *testing.T) {
 func TestClientSearchFollowsPaginationAndStopsAtLimit(t *testing.T) {
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		requests++
 		var body searchJQLRequest
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -155,7 +236,11 @@ func TestClientSearchFollowsPaginationAndStopsAtLimit(t *testing.T) {
 // first page fills the whole limit would waste a call on every small search.
 func TestClientSearchStopsWhenNoTokenIsOffered(t *testing.T) {
 	var requests int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		requests++
 		_, _ = w.Write([]byte(`{"issues":[{"key":"A-1","fields":{"summary":"one"}}]}`))
 	}))
