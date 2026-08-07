@@ -30,6 +30,7 @@ func helpEntries(m Model) []helpEntry {
 		{"r", "refresh section"},
 		{"/", "filter"},
 		{"esc", "clear filter"},
+		{"e", "edit jql"},
 		{"y", "copy key"},
 		{"Y", "copy url"},
 		{"?", "help"},

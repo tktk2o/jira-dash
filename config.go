@@ -450,5 +450,5 @@ var reservedKeys = map[string]bool{
 	"q": true, "tab": true, "shift+tab": true, "h": true, "l": true,
 	"left": true, "right": true, "j": true, "k": true, "up": true, "down": true,
 	"g": true, "G": true, "p": true, "/": true, "esc": true, "r": true,
-	"y": true, "Y": true, "?": true, "enter": true, "ctrl+c": true,
+	"y": true, "Y": true, "?": true, "enter": true, "ctrl+c": true, "e": true,
 }

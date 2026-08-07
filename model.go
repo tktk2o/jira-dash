@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -25,6 +26,27 @@ type sectionState struct {
 	cursor    int
 	filter    string
 	fetchSeq  int
+
+	// jqlOverride is a session-only JQL typed into the search box (e), taking
+	// over from cfg.JQL until cleared. Kept apart from cfg rather than written
+	// into it so a tab switch and Init's config-seeded cache lookups never see
+	// anything but what the file actually says - only effective() and what it
+	// feeds ever see the override.
+	jqlOverride string
+}
+
+// effective is cfg with JQL swapped for jqlOverride when one is set. Every
+// fetch call site - manual r, the auto-refresh tick, a configured refresh:,
+// and the description prefetch that follows a landed fetch - routes through
+// this rather than reading cfg directly, so none of them can drift back to
+// asking Jira for the config's JQL while the box shows an edited one.
+func (s sectionState) effective() Section {
+	if s.jqlOverride == "" {
+		return s.cfg
+	}
+	cfg := s.cfg
+	cfg.JQL = s.jqlOverride
+	return cfg
 }
 
 // visible applies the section's sprint prefix and then the local filter.
@@ -119,6 +141,14 @@ type Model struct {
 	filtering   bool
 	filterDraft string
 
+	// editingJQL and jqlDraft back the search box (e): a session-only edit of
+	// the active section's JQL. jqlDraft is a textinput rather than a plain
+	// string for the same reason filterDraft is not one here - the box wants a
+	// cursor and horizontal scroll for a query that can run past the pane's
+	// width, both of which bubbles/textinput gives for free.
+	editingJQL bool
+	jqlDraft   textinput.Model
+
 	// The create prompt is the one place the dashboard writes to Jira. It holds
 	// only the summary: the type comes from which key opened it, and the project
 	// and sprint from the row the cursor was on.
@@ -207,6 +237,9 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 		// Built here, not on first use: a zero textarea.Model has nil internals
 		// and panics the moment a prompt opens.
 		prompt: newPromptInput(cfg.Theme),
+		// Same reason as prompt above: a zero textinput.Model panics the moment
+		// the search box is focused.
+		jqlDraft: newJQLInput(cfg.Theme),
 	}
 
 	// Seed from cache so the first frame is instant; the fetch in Init then
@@ -230,7 +263,7 @@ func (m Model) Init() tea.Cmd {
 	// keeps ages live and, if configured, drives auto-refetch.
 	cmds := make([]tea.Cmd, 0, len(m.sections)+2)
 	for i, s := range m.sections {
-		cmds = append(cmds, fetchSection(m.searcher, i, s.fetchSeq, s.cfg))
+		cmds = append(cmds, fetchSection(m.searcher, i, s.fetchSeq, s.effective()))
 	}
 	cmds = append(cmds, m.spinner.Tick, m.nextTick())
 	return tea.Batch(cmds...)
@@ -243,6 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeDetail()
+		m.syncJQLWidth()
 		return m, nil
 
 	case fetchedMsg:
@@ -342,7 +376,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := make([]tea.Cmd, 0, len(m.sections)+2)
 		for i := range m.sections {
 			m.sections[i].loading = true
-			cmds = append(cmds, fetchSection(m.searcher, i, m.nextFetch(i), m.sections[i].cfg))
+			cmds = append(cmds, fetchSection(m.searcher, i, m.nextFetch(i), m.sections[i].effective()))
 		}
 		return m, tea.Batch(append(cmds, m.spinner.Tick, m.nextTick())...)
 
@@ -367,7 +401,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.idx >= 0 && msg.idx < len(m.sections) {
 			m.sections[msg.idx].loading = true
 			return m, tea.Batch(
-				fetchSection(m.searcher, msg.idx, m.nextFetch(msg.idx), m.sections[msg.idx].cfg),
+				fetchSection(m.searcher, msg.idx, m.nextFetch(msg.idx), m.sections[msg.idx].effective()),
 				m.spinner.Tick,
 			)
 		}
@@ -449,7 +483,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			s := &m.sections[idx]
 			s.loading = true
-			return m, tea.Batch(fetchSection(m.searcher, idx, m.nextFetch(idx), s.cfg), m.spinner.Tick)
+			return m, tea.Batch(fetchSection(m.searcher, idx, m.nextFetch(idx), s.effective()), m.spinner.Tick)
 		}
 		return m, nil
 
@@ -505,6 +539,9 @@ func (m Model) applyFetched(msg fetchedMsg) Model {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editingJQL {
+		return m.handleJQLKey(msg)
+	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}
@@ -584,6 +621,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filtering = true
 		m.filterDraft = m.sections[m.active].filter
 		return m, nil
+	case "e":
+		m.openJQLEdit()
+		return m, nil
 	case "esc":
 		m.sections[m.active].filter = ""
 		m.sections[m.active].cursor = 0
@@ -603,7 +643,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detail.SetContent("")
 		// The tick is batched in because the loop stops itself whenever nothing
 		// is loading; without this the spinner would sit frozen on one frame.
-		return m, tea.Batch(fetchSection(m.searcher, m.active, m.nextFetch(m.active), s.cfg), m.spinner.Tick)
+		return m, tea.Batch(fetchSection(m.searcher, m.active, m.nextFetch(m.active), s.effective()), m.spinner.Tick)
 	case "y":
 		return m, m.copySelected(func(i Issue) string { return i.Key })
 	case "Y":
