@@ -317,5 +317,35 @@ create:
 - **書き込み系のキーバインド**: jhd 自身が Jira に書き込むのは課題作成のみ。コメント・
   ステータス・担当者などその他の変更は、すべて設定のキーバインド（シェルコマンド）
   で行う
+- **`defaults.refetchIntervalMinutes`**: 全セクションを自動で再取得する間隔（分）
+  （既定 `30`、`0` で無効化）。自動再取得を無効にしても、相対時刻（`updated 3m ago`）
+  だけを更新する軽い 1 分ごとの tick は動き続ける（ネットワークには触れない）
+- **`defaults.sectionsShowCount`**: 各セクションのタブに件数を表示する（既定 `true`）
+- **`defaults.confirmQuit`**: `q`/`ctrl+c` を一度だけ確認する（`press q again to
+  quit`）ようにし、即終了しなくする（既定 `false`）
+- **`defaults.columns`**: `key` / `type` / `status` / `points` / `assignee` /
+  `updated` / `summary` のうちどれを表に出すか。表示順は設定の書き方に関係なく常に
+  上記の固定順で、`summary` は必須。列を隠すとその幅は Summary に渡る。省略時は全列
+  表示（これまでの動作）
+- **`defaults.preview.position`**: `right` | `bottom` | `auto`（既定 `right`）。
+  `auto` は端末幅が 80 桁以上なら `right`（プレビューの自動クローズと同じ閾値）、
+  それ未満なら `bottom` を選ぶ
+- **`defaults.preview.heightLines`**: `position` でプレビューを表の下に置いたときの
+  高さ（行数、既定 `15`）
+- **テーマの色**: `theme.colors.*` はどの値も `#hex` 色、またはターミナルの ANSI
+  カラーインデックス（`0`〜`255`）のどちらでも指定できる
+- **リポジトリ単位の設定**: `--config` も `JIRA_DASH_CONFIG` も指定していないとき、
+  カレントディレクトリの `./.jira-dash.yml`（または `.jira-dash.yaml`）があれば既定の
+  設定パスの代わりに使う。gh-dash 自身のリポジトリ単位設定と違い、既定の設定と
+  **マージせず丸ごと置き換える** — 部分的なファイルがどのキーを上書きする意図か
+  推測する必要が出るのを避けるため
+- **プレビューの先読み**: セクションの取得が終わるたびに、先頭 25 行分の本文を裏で
+  まとめて取得しておく。その範囲内の行ならカーソルを乗せた瞬間プレビューがほぼ
+  即表示になる。範囲外の行はこれまでどおり都度取得する。Jira の直前のレスポンスが
+  `X-RateLimit-NearLimit` を出していた場合、自動再取得の tick は1回スキップされる
+  （その旨がフッターに出る）
+- **JQL を組み立てる**: `jira jql suggest <fieldName> [fieldValue]` で、そのフィールドの
+  有効な値の候補（自動補完）を一覧できる。セクションの `jql` を手書きするときに使う。
+  既定のテーブル出力に加え `-f json` にも対応
 
 各設定の背景にある判断は [docs/adr/](docs/adr/) を参照。

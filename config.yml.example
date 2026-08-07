@@ -63,7 +63,34 @@ defaults:
     # 0 < width < 1 is a ratio of the screen width. The preview closes on its
     # own when it would leave the table under 80 columns.
     width: 0.5
+    # position also accepts "bottom" (stacks the pane under the table) and
+    # "auto" (right when the terminal is >=80 columns, bottom otherwise).
+    # position: auto
+    #
+    # heightLines only matters when position ends up "bottom" - how tall the
+    # pane is, in lines. Default shown:
+    # heightLines: 15
   limit: 20
+
+  # How often, in minutes, every section refetches itself in the background.
+  # 0 disables auto-refetch entirely; even then a light 1-minute tick keeps
+  # relative times ("updated 3m ago") fresh without touching the network.
+  # Default shown:
+  # refetchIntervalMinutes: 30
+
+  # Puts each section's row count on its tab, e.g. "Example Sprint (15)".
+  # Default shown:
+  # sectionsShowCount: true
+
+  # Makes q/ctrl+c ask once ("press q again to quit") instead of quitting on
+  # the first press. Default shown:
+  # confirmQuit: false
+
+  # Which built-in columns to show: key, type, status, points, assignee,
+  # updated, summary. Render order is always the list above, never the order
+  # written here, and summary is required - hiding a column hands its width
+  # to Summary. Omitted means every column (the default).
+  # columns: [key, type, status, updated, summary]
 
 # 課題を作るキー。型はサイトごとに名前が違う（日本語サイトなら日本語）ので
 # コードではなく設定側にある。project とスプリントはカーソル下の行から継承する
@@ -152,6 +179,9 @@ keybindings:
       command: jira edit {{.IssueKey}} -a {{.Choice}}
 
 theme:
+  # Every color below accepts a #hex value (as shown) or a terminal ANSI
+  # color index 0-255 written as a bare number or a quoted string, e.g.
+  # primary: 141
   colors: # Dracula
     text:
       primary: "#f8f8f2"
