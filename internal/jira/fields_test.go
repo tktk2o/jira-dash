@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // fieldsTestClient builds a Client pointed at srv, with a distinct cloud id
@@ -140,6 +141,70 @@ func TestFieldIDsCachesSeparatelyPerCloudID(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Fatalf("hits = %d, want 2 (each cloud id must fetch on its own first call)", hits)
+	}
+}
+
+// A cache file older than fieldsCacheTTL must not be trusted: FieldIDs must
+// refetch rather than serve field ids that may no longer match this site's
+// current custom fields.
+func TestFieldIDsRefetchesWhenTheCacheHasExpired(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(fieldResponseBody))
+	}))
+	defer srv.Close()
+	c := fieldsTestClient(t, srv, "cloud-expired")
+
+	if _, err := c.FieldIDs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	path := fieldsCachePath("cloud-expired")
+	old := time.Now().Add(-fieldsCacheTTL - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.FieldIDs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 2 {
+		t.Fatalf("handler was hit %d times, want 2 (the stale cache must trigger a refetch)", hits)
+	}
+}
+
+// When the cache has expired but the network fails, FieldIDs must still
+// serve the stale cache rather than fail outright - a working-but-old
+// FieldIDs beats no FieldIDs when, say, the network is briefly down.
+func TestFieldIDsFallsBackToTheStaleCacheOnNetworkFailure(t *testing.T) {
+	up := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(fieldResponseBody))
+	}))
+	defer srv.Close()
+	c := fieldsTestClient(t, srv, "cloud-fallback")
+
+	first, err := c.FieldIDs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fieldsCachePath("cloud-fallback")
+	old := time.Now().Add(-fieldsCacheTTL - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	up = false
+
+	got, err := c.FieldIDs(context.Background())
+	if err != nil {
+		t.Fatalf("want the stale cache served on network failure, got error: %v", err)
+	}
+	if got != first {
+		t.Errorf("FieldIDs() = %+v, want the stale cached value %+v", got, first)
 	}
 }
 
