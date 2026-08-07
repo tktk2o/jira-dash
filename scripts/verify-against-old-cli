@@ -122,8 +122,15 @@ $new_out"
 # leaking into either is a defect regardless of anything else this script
 # checks.
 require_no_token() {
-	local label=$1 token
-	token=$(jq -r '.apiToken // empty' "$HOME/.config/jira-cli/credentials.json" 2>/dev/null || true)
+	local label=$1 token encoded
+	token=${JIRA_API_TOKEN:-}
+	if [[ -z "$token" ]]; then
+		encoded=$(jq -r '.apiToken // empty' "$HOME/.config/jira-cli/credentials.json" 2>/dev/null || true)
+		if [[ -n "$encoded" ]]; then
+			token=$(printf '%s' "$encoded" | base64 --decode 2>/dev/null ||
+				printf '%s' "$encoded" | base64 -D 2>/dev/null || true)
+		fi
+	fi
 	[[ -n "$token" ]] || return 0
 	if printf '%s%s' "$old_out" "$new_out" | grep -qF "$token"; then
 		fail "$label (token leak)" "the API token appeared in one CLI's output"

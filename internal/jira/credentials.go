@@ -131,9 +131,28 @@ func SaveCredentials(c Credentials) (string, error) {
 	}
 
 	path := filepath.Join(dir, "credentials.json")
-	// 0o600 from the start, not a chmod after the fact: a window where the
-	// token sat world- or group-readable would defeat the point of the mode.
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, ".credentials-*")
+	if err != nil {
+		return "", fmt.Errorf("creating temporary credentials file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("securing temporary credentials file: %w", err)
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("writing temporary credentials file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("syncing temporary credentials file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("closing temporary credentials file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil

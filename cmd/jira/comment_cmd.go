@@ -12,8 +12,8 @@ func runCommentAdd(ctx context.Context, client jiraClient, args []string, stdout
 	fs := flag.NewFlagSet("comment add", flag.ContinueOnError)
 	var body, bodyFile, editor, format string
 	var dryRun bool
-	fs.StringVar(&body, "b", "", "comment body (Markdown)")
-	fs.StringVar(&body, "body", "", "comment body (Markdown)")
+	fs.StringVar(&body, "b", "", "comment body (plain text; line breaks preserved)")
+	fs.StringVar(&body, "body", "", "comment body (plain text; line breaks preserved)")
 	fs.StringVar(&bodyFile, "B", "", "read the body from a file (- for stdin)")
 	fs.StringVar(&bodyFile, "body-file", "", "read the body from a file (- for stdin)")
 	fs.StringVar(&editor, "e", "", "open $EDITOR (or this command) to write the body")
@@ -52,7 +52,7 @@ func runCommentAdd(ctx context.Context, client jiraClient, args []string, stdout
 		// internal/jira) - this is the text that would be sent, in the form
 		// the caller wrote it, which is enough to review before sending for
 		// real.
-		fmt.Fprintf(stdout, "POST /issue/%s/comment\nbody (markdown, sent as ADF):\n%s\n", key, resolvedBody)
+		fmt.Fprintf(stdout, "POST /issue/%s/comment\nbody (plain text, sent as ADF):\n%s\n", key, resolvedBody)
 		return nil
 	}
 
@@ -93,6 +93,9 @@ func runCommentList(ctx context.Context, client jiraClient, args []string, stdou
 	}
 	if len(positionals) != 1 {
 		return fmt.Errorf("usage: jira comment list <key>")
+	}
+	if max < 1 {
+		return fmt.Errorf("comment list --max-results must be positive")
 	}
 	key := positionals[0]
 

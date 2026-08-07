@@ -297,8 +297,8 @@ specifically for cases where the value that needs to be sent differs from what s
 be shown; omitting `label` displays `value` as-is.
 
 Writing two or more of `prompt` / `choices` / `choicesFrom` on the same key **fails at
-startup**. A single key can only open one kind of box; if both are specified, whichever
-is checked first silently wins.
+startup**. A single key can only open one kind of box; startup validation prevents the
+otherwise ambiguous "first one checked wins" behaviour.
 
 Your own accountId is printed by `jira auth status` (useful when hand-writing
 `choices`).

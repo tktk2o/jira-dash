@@ -228,6 +228,29 @@ func TestSaveCredentialsProducesAFileLoadCredentialsCanReread(t *testing.T) {
 	}
 }
 
+func TestSaveCredentialsRepairsAnExistingInsecureFileMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "jira-cli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "credentials.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveCredentials(Credentials{Email: "a@example.com", APIToken: "tok", CloudID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("credentials mode = %o, want 600", got)
+	}
+}
+
 // Sanity check on the test helper itself: it must produce what LoadCredentials
 // expects to parse, so a bug in writeCreds cannot masquerade as a passing
 // LoadCredentials test.

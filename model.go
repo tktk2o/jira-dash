@@ -32,6 +32,7 @@ type sectionState struct {
 	err       error
 	cursor    int
 	filter    string
+	fetchSeq  int
 }
 
 // visible applies the section's sprint prefix and then the local filter.
@@ -67,6 +68,7 @@ func (s sectionState) selected() (Issue, bool) {
 
 type fetchedMsg struct {
 	idx    int
+	seq    int
 	issues []Issue
 	at     time.Time
 	err    error
@@ -134,7 +136,9 @@ type Model struct {
 	// arrived and is empty". Without it an issue with no description read as a
 	// fetch that never finished - the pane said "loading..." forever, since an
 	// empty detailBody was the only signal either state had.
-	detailBodyDone bool
+	detailBodyDone    bool
+	detailBodyErr     string
+	detailCommentsErr string
 
 	filtering   bool
 	filterDraft string
@@ -225,7 +229,7 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 	// Seed from cache so the first frame is instant; the fetch in Init then
 	// replaces these rows.
 	for _, sec := range cfg.Sections {
-		st := sectionState{cfg: sec, cacheKey: SectionKey(sec.JQL, sec.Limit), loading: true}
+		st := sectionState{cfg: sec, cacheKey: SectionKey(sec.JQL, sec.Limit), loading: true, fetchSeq: 1}
 		if cached, ok := c.ReadSection(st.cacheKey); ok {
 			st.issues = cached.Issues
 			st.fetchedAt = cached.FetchedAt
@@ -242,12 +246,12 @@ func (m Model) Init() tea.Cmd {
 	// animation has to be running from the first frame.
 	cmds := make([]tea.Cmd, 0, len(m.sections)+1)
 	for i, s := range m.sections {
-		cmds = append(cmds, fetchSection(m.searcher, i, s.cfg))
+		cmds = append(cmds, fetchSection(m.searcher, i, s.fetchSeq, s.cfg))
 	}
 	return tea.Batch(append(cmds, m.spinner.Tick)...)
 }
 
-func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
+func fetchSection(s Searcher, idx, seq int, sec Section) tea.Cmd {
 	return func() tea.Msg {
 		fetchSem <- struct{}{}
 		defer func() { <-fetchSem }()
@@ -256,7 +260,7 @@ func fetchSection(s Searcher, idx int, sec Section) tea.Cmd {
 		defer cancel()
 
 		found, err := s.Search(ctx, sec.JQL, sec.Limit)
-		return fetchedMsg{idx: idx, issues: found, at: time.Now(), err: err}
+		return fetchedMsg{idx: idx, seq: seq, issues: found, at: time.Now(), err: err}
 	}
 }
 
@@ -311,30 +315,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case issueLoadedMsg:
 		if msg.err != nil {
-			m.status = msg.err.Error()
-			// A failed fetch is still a finished one. Leaving the pane on
-			// "loading..." would contradict the error in the footer.
-			if msg.key != "" && msg.key == m.detailKey {
-				m.detailBodyDone = true
-				m.refreshDetail(false)
+			if msg.key == "" || msg.key != m.detailKey {
+				return m, nil
 			}
+			m.status = msg.err.Error()
+			m.detailBodyDone = true
+			m.detailBodyErr = msg.err.Error()
+			m.refreshDetail(false)
 			return m, nil
 		}
 		// A reply for a row the cursor has already left must not overwrite the
 		// pane with another issue's text.
 		if msg.key != "" && msg.key == m.detailKey {
+			if m.detailBodyErr != "" && m.status == m.detailBodyErr {
+				m.status = ""
+			}
 			m.detailBody = msg.markdown
 			m.detailBodyDone = true
+			m.detailBodyErr = ""
 			m.refreshDetail(false)
 		}
 		return m, nil
 
 	case commentsLoadedMsg:
 		if msg.err != nil {
+			if msg.key == "" || msg.key != m.detailKey {
+				return m, nil
+			}
 			m.status = msg.err.Error()
+			m.detailCommentsErr = msg.err.Error()
 			return m, nil
 		}
 		if msg.key != "" && msg.key == m.detailKey {
+			if m.detailCommentsErr != "" && m.status == m.detailCommentsErr {
+				m.status = ""
+			}
+			m.detailCommentsErr = ""
 			m.detailComments = msg.comments
 			m.refreshDetail(false)
 		}
@@ -361,7 +377,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.idx >= 0 && msg.idx < len(m.sections) {
 			m.sections[msg.idx].loading = true
 			return m, tea.Batch(
-				fetchSection(m.searcher, msg.idx, m.sections[msg.idx].cfg),
+				fetchSection(m.searcher, msg.idx, m.nextFetch(msg.idx), m.sections[msg.idx].cfg),
 				m.spinner.Tick,
 			)
 		}
@@ -431,9 +447,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the two are indistinguishable. The rows are not blanked the way r does
 			// it - this is a refetch behind a change you just made, not a reload you
 			// asked to watch. fetchedMsg re-arms the preview load on arrival.
-			s := &m.sections[m.active]
+			idx := msg.section
+			if idx < 0 || idx >= len(m.sections) {
+				idx = m.active
+			}
+			s := &m.sections[idx]
 			s.loading = true
-			return m, tea.Batch(fetchSection(m.searcher, m.active, s.cfg), m.spinner.Tick)
+			return m, tea.Batch(fetchSection(m.searcher, idx, m.nextFetch(idx), s.cfg), m.spinner.Tick)
 		}
 		return m, nil
 
@@ -463,6 +483,9 @@ func (m Model) applyFetched(msg fetchedMsg) Model {
 		return m
 	}
 	s := m.sections[msg.idx]
+	if msg.seq != 0 && msg.seq != s.fetchSeq {
+		return m
+	}
 	s.loading = false
 
 	if msg.err != nil {
@@ -483,6 +506,11 @@ func (m Model) applyFetched(msg fetchedMsg) Model {
 	// Best effort: a cache write failure must not interrupt browsing.
 	_ = m.cache.WriteSection(s.cacheKey, msg.issues, msg.at)
 	return m
+}
+
+func (m *Model) nextFetch(idx int) int {
+	m.sections[idx].fetchSeq++
+	return m.sections[idx].fetchSeq
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -569,7 +597,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detail.SetContent("")
 		// The tick is batched in because the loop stops itself whenever nothing
 		// is loading; without this the spinner would sit frozen on one frame.
-		return m, tea.Batch(fetchSection(m.searcher, m.active, s.cfg), m.spinner.Tick)
+		return m, tea.Batch(fetchSection(m.searcher, m.active, m.nextFetch(m.active), s.cfg), m.spinner.Tick)
 	case "y":
 		return m, m.copySelected(func(i Issue) string { return i.Key })
 	case "Y":
@@ -685,7 +713,7 @@ func (m Model) visibleChoices() []Choice {
 	}
 	type ranked struct {
 		choice Choice
-		rank   int
+		rank   int64
 	}
 	matches := make([]ranked, 0, len(m.chooseList))
 	for _, c := range m.chooseList {
@@ -709,25 +737,21 @@ func (m Model) visibleChoices() []Choice {
 // (not necessarily adjacent), case-insensitive, and if so a rank where lower
 // sorts first.
 //
-// The rank is simply the index, within label, of the LAST matched character -
-// found by the greedy leftmost match (each query rune claims the earliest
-// unclaimed occurrence in label). Minimising that one number rewards both of
-// the properties the task asked for at once: ending the match early requires
-// starting early, and it requires the matched runes to be packed tightly
-// rather than scattered - a match spread across the whole label necessarily
-// ends late. A separate "earliness" term added to a separate "tightness" term
-// would double-count exactly this overlap, so one number is not just simpler,
-// it is the more honest score. Ties (equal end index) fall back to
-// chooseList's order via the stable sort in visibleChoices.
-func fuzzyMatch(label, query string) (rank int, ok bool) {
+// Rank orders by the span from first to last matched rune, then by start
+// position. This distinguishes a compact later match from a scattered early
+// one; ties fall back to chooseList's order via visibleChoices' stable sort.
+func fuzzyMatch(label, query string) (rank int64, ok bool) {
 	if query == "" {
 		return 0, true
 	}
 	l := []rune(strings.ToLower(label))
 	q := []rune(strings.ToLower(query))
-	qi, end := 0, -1
+	qi, start, end := 0, -1, -1
 	for i, r := range l {
 		if r == q[qi] {
+			if start == -1 {
+				start = i
+			}
 			end = i
 			qi++
 			if qi == len(q) {
@@ -738,7 +762,9 @@ func fuzzyMatch(label, query string) (rank int, ok bool) {
 	if qi != len(q) {
 		return 0, false
 	}
-	return end, true
+	// Compact matches sort first, then earlier matches. Packing the two values
+	// into one integer keeps visibleChoices' stable sort simple.
+	return int64(end-start)<<32 | int64(start), true
 }
 
 // fetchChoices calls the API behind choicesFrom: transitions/assignees. seq and

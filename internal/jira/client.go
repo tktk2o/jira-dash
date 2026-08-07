@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+const httpTimeout = 30 * time.Second
 
 // Client is an authenticated door to one Jira Cloud site. It holds no
 // mutable state beyond the http.Client's own connection pool, so a single
@@ -26,7 +29,7 @@ type Client struct {
 // call - a bad token only surfaces on the first request, which is when this
 // program can actually say what went wrong.
 func NewClient(creds Credentials) *Client {
-	return &Client{creds: creds, http: &http.Client{}}
+	return &Client{creds: creds, http: &http.Client{Timeout: httpTimeout}}
 }
 
 // BaseURL is the root of the platform REST API: issues, comments, fields,

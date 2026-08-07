@@ -33,8 +33,8 @@ func parseCreateFlags(args []string) (createFlags, error) {
 	fs.StringVar(&f.issueType, "type", "", "issue type")
 	fs.StringVar(&f.summary, "s", "", "summary")
 	fs.StringVar(&f.summary, "summary", "", "summary")
-	fs.StringVar(&f.description, "d", "", "description (Markdown)")
-	fs.StringVar(&f.description, "description", "", "description (Markdown)")
+	fs.StringVar(&f.description, "d", "", "description (plain text; line breaks preserved)")
+	fs.StringVar(&f.description, "description", "", "description (plain text; line breaks preserved)")
 	fs.StringVar(&f.descriptionFile, "D", "", "read the description from a file (- for stdin)")
 	fs.StringVar(&f.descriptionFile, "description-file", "", "read the description from a file (- for stdin)")
 	fs.StringVar(&f.assignee, "a", "", "assignee account id")
@@ -188,7 +188,7 @@ func printCreateDryRun(w io.Writer, f createFlags, description string, extraFiel
 	fmt.Fprintf(w, "POST /issue (project=%s, issuetype=%s)\n", f.project, f.issueType)
 	fmt.Fprintf(w, "  summary: %s\n", f.summary)
 	if description != "" {
-		fmt.Fprintln(w, "  description: <markdown, sent as ADF>")
+		fmt.Fprintln(w, "  description: <plain text, sent as ADF>")
 	}
 	if f.sprint != "" {
 		fmt.Fprintf(w, "  sprint: %s (name/id resolved to a board sprint at send time)\n", f.sprint)

@@ -162,6 +162,18 @@ func TestFetchedMsgReplacesRows(t *testing.T) {
 	}
 }
 
+func TestOlderSectionFetchCannotOverwriteANewerResult(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.sections[0].fetchSeq = 2
+	next, _ := m.Update(fetchedMsg{idx: 0, seq: 2, issues: issues("NEW-1"), at: time.Now()})
+	m = next.(Model)
+	next, _ = m.Update(fetchedMsg{idx: 0, seq: 1, issues: issues("OLD-1"), at: time.Now().Add(time.Second)})
+	m = next.(Model)
+	if got := m.sections[0].issues[0].Key; got != "NEW-1" {
+		t.Fatalf("stale fetch replaced the latest rows: got %s", got)
+	}
+}
+
 // A failed refresh must not blank the dashboard: stale rows beat no rows when
 // Jira is down or you are off the VPN.
 func TestFetchedMsgWithErrorKeepsStaleRows(t *testing.T) {
@@ -878,13 +890,9 @@ func TestFuzzyMatchAcceptsInOrderNonAdjacentCaseInsensitiveChars(t *testing.T) {
 	}
 }
 
-// The rank is the index of the last matched character, so a query that both
-// starts earlier and stays tighter in one label than another has to come out
-// lower - this is the concrete case where that ordering is visible, not just
-// asserted on the function directly.
+// Equal-span matches are ordered by their start position.
 func TestFuzzyRankSortsEarlierTighterMatchesFirst(t *testing.T) {
-	// "ab": "Abacus" matches at 0,1 (rank 1); "Cab" matches at 1,2 (rank 2).
-	// Abacus starts earlier and is at least as tight, so it must rank first.
+	// "ab": both matches are adjacent, but Abacus starts first.
 	rankAbacus, ok := fuzzyMatch("Abacus", "ab")
 	if !ok {
 		t.Fatal("Abacus should match \"ab\"")
@@ -904,6 +912,14 @@ func TestFuzzyRankSortsEarlierTighterMatchesFirst(t *testing.T) {
 	got := m.visibleChoices()
 	if len(got) != 2 || got[0].Value != "Abacus" || got[1].Value != "Cab" {
 		t.Errorf("visibleChoices = %+v, want Abacus ranked above Cab", got)
+	}
+}
+
+func TestFuzzyRankPrefersACompactLaterMatchToAScatteredEarlierOne(t *testing.T) {
+	scattered, _ := fuzzyMatch("axb", "ab")
+	compact, _ := fuzzyMatch("zab", "ab")
+	if compact >= scattered {
+		t.Fatalf("compact rank %d should beat scattered rank %d", compact, scattered)
 	}
 }
 
