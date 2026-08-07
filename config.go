@@ -16,6 +16,10 @@ const (
 	defaultLimit           = 20
 	defaultPreviewWidth    = 0.5
 	defaultPreviewPosition = "right"
+	// defaultRefetchIntervalMinutes matches gh-dash's own default. An explicit 0
+	// means "never" rather than "use the default" - see RefetchIntervalMinutes -
+	// so this only applies when the key is omitted entirely.
+	defaultRefetchIntervalMinutes = 30
 )
 
 // Config is the whole file, and the whole contract with the person who edits
@@ -62,6 +66,22 @@ type Defaults struct {
 	Limit   int     `yaml:"limit"`
 	// Dir is the fallback working directory for sections that do not name one.
 	Dir string `yaml:"dir"`
+
+	// RefetchIntervalMinutes is how often every section refetches itself, gh-dash
+	// parity. A pointer because 0 is a real, distinct value here ("never
+	// auto-refetch") rather than "unset" - a plain int could not tell an omitted
+	// key from an explicit 0, and the default is 30, not 0.
+	RefetchIntervalMinutes *int `yaml:"refetchIntervalMinutes"`
+
+	// SectionsShowCount puts each section's row count on its tab. Pointer for the
+	// same reason as Preview.Open: the default is true, so a plain bool could not
+	// tell an omitted key from an explicit false.
+	SectionsShowCount *bool `yaml:"sectionsShowCount"`
+
+	// ConfirmQuit makes q/ctrl+c ask once before it quits, gh-dash parity. Plain
+	// bool is enough here - the default (false) is also the zero value, so there
+	// is nothing an omitted key needs to be told apart from.
+	ConfirmQuit bool `yaml:"confirmQuit"`
 }
 
 // Preview is the pane beside the table. Open is a pointer so that an omitted key
@@ -223,6 +243,18 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.Defaults.Preview.Width <= 0 || c.Defaults.Preview.Width >= 1 {
 		return nil, fmt.Errorf("%s: defaults.preview.width must be greater than 0 and less than 1", path)
+	}
+
+	if c.Defaults.RefetchIntervalMinutes == nil {
+		v := defaultRefetchIntervalMinutes
+		c.Defaults.RefetchIntervalMinutes = &v
+	}
+	if *c.Defaults.RefetchIntervalMinutes < 0 {
+		return nil, fmt.Errorf("%s: defaults.refetchIntervalMinutes must not be negative", path)
+	}
+	if c.Defaults.SectionsShowCount == nil {
+		v := true
+		c.Defaults.SectionsShowCount = &v
 	}
 
 	home, _ := os.UserHomeDir()

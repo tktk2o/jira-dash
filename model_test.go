@@ -84,13 +84,19 @@ func (f fakeSearcher) AssignableUsers(_ context.Context, issueKey, _ string) ([]
 }
 
 func testConfig() *Config {
-	open := true
+	open, showCount := true, true
+	refetch := 0 // tests drive ticks explicitly; a running timer would race them
 	return &Config{
 		Sections: []Section{
 			{Title: "Mine", JQL: "assignee = currentUser()", Limit: 20},
 			{Title: "Sprint", JQL: "sprint in openSprints()", Limit: 20},
 		},
-		Defaults: Defaults{Limit: 20, Preview: Preview{Open: &open, Position: "right", Width: 0.5}},
+		Defaults: Defaults{
+			Limit:                  20,
+			Preview:                Preview{Open: &open, Position: "right", Width: 0.5},
+			RefetchIntervalMinutes: &refetch,
+			SectionsShowCount:      &showCount,
+		},
 	}
 }
 
@@ -1456,5 +1462,169 @@ func TestFilterAcceptsSpaces(t *testing.T) {
 	}
 	if m.filterDraft != "two words" {
 		t.Errorf("filterDraft = %q, want %q", m.filterDraft, "two words")
+	}
+}
+
+// A refetch tick has to behave like r pressed on every section at once: every
+// section goes loading, and the reply is the same fetchedMsg r produces, so
+// applyFetched's own seq guard is what protects a tick's reply exactly as it
+// protects r's.
+func TestRefetchTickRefreshesEverySection(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+
+	next, cmd := m.Update(tickMsg{refetch: true})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("a refetch tick should return commands")
+	}
+	for i, s := range m.sections {
+		if !s.loading {
+			t.Errorf("section %d loading = false, want true after a refetch tick", i)
+		}
+	}
+}
+
+// Unlike r, the tick must not blank the rows: a background refresh firing every
+// few minutes should not flash the screen empty while the new rows are still
+// in flight.
+func TestRefetchTickKeepsStaleRowsWhileLoading(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	next, _ = m.Update(tickMsg{refetch: true})
+	m = next.(Model)
+	if len(m.sections[0].issues) != 1 {
+		t.Errorf("issues = %v, want the stale row kept while the refetch is in flight", m.sections[0].issues)
+	}
+}
+
+// A tick's reply is a plain fetchedMsg, so a stale one - superseded by a second
+// tick or a manual r before the first lands - must be discarded the same way
+// any other stale fetchedMsg is: applyFetched compares seq, and nextFetch is
+// what advances it.
+func TestStaleRefetchTickReplyIsDiscarded(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+	staleSeq := m.sections[0].fetchSeq
+
+	next, _ := m.Update(tickMsg{refetch: true})
+	m = next.(Model)
+	current := m.sections[0].fetchSeq
+	if current == staleSeq {
+		t.Fatal("a refetch tick should advance fetchSeq")
+	}
+
+	next, _ = m.Update(fetchedMsg{idx: 0, seq: staleSeq, issues: issues("STALE-1"), at: fixedNow()()})
+	m = next.(Model)
+	for _, i := range m.sections[0].issues {
+		if i.Key == "STALE-1" {
+			t.Error("a reply carrying a superseded seq must not land")
+		}
+	}
+}
+
+// A non-refetch tick exists only to redraw the clock; it must reschedule
+// itself but must not touch any section.
+func TestUiTickDoesNotRefetch(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+
+	next, cmd := m.Update(tickMsg{refetch: false})
+	m = next.(Model)
+	if cmd == nil {
+		t.Error("a ui tick should reschedule itself")
+	}
+	for i, s := range m.sections {
+		if s.loading {
+			t.Errorf("section %d loading = true, want a ui tick to leave sections alone", i)
+		}
+	}
+}
+
+// Init's choice of which clock to start has to follow the config: an interval
+// schedules a refetch tick, and 0 falls back to the ui-only clock so ages
+// still redraw with auto-refetch off.
+func TestNextTickFollowsRefetchInterval(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	if cmd := m.nextTick(); cmd == nil {
+		t.Fatal("nextTick should always return a command")
+	}
+
+	minutes := 5
+	m.cfg.Defaults.RefetchIntervalMinutes = &minutes
+	// tea.Cmd is opaque, so this only asserts nextTick still returns something
+	// when a positive interval is configured - the refetch-vs-ui branch is
+	// exercised through tickMsg.refetch above.
+	if cmd := m.nextTick(); cmd == nil {
+		t.Fatal("nextTick should return a command for a positive interval too")
+	}
+}
+
+// The second q/ctrl+c within the same prompt is what actually quits when
+// confirmQuit is on; the first only arms it and reports the prompt in status.
+func TestConfirmQuitNeedsTwoPresses(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Defaults.ConfirmQuit = true
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("the first q with confirmQuit on should not quit yet")
+	}
+	if !m.pendingQuit {
+		t.Error("the first q should arm pendingQuit")
+	}
+	if m.status != confirmQuitPrompt {
+		t.Errorf("status = %q, want the confirm prompt", m.status)
+	}
+
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("the second q should quit")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("expected tea.Quit's message")
+	}
+}
+
+// Any key other than the second q/ctrl+c cancels a pending confirmQuit, the
+// same way any key other than a second g disarms gg.
+func TestConfirmQuitIsCancelledByAnyOtherKey(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Defaults.ConfirmQuit = true
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = next.(Model)
+	if !m.pendingQuit {
+		t.Fatal("the first q should arm pendingQuit")
+	}
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = next.(Model)
+	if m.pendingQuit {
+		t.Error("any other key should cancel a pending confirmQuit")
+	}
+	if m.status == confirmQuitPrompt {
+		t.Error("cancelling should clear the confirm prompt out of status")
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("q after a cancelled confirmQuit should arm it again, not quit")
+	}
+}
+
+// Without confirmQuit configured, q must still quit on the first press - the
+// feature must not change the default behaviour.
+func TestQuitsImmediatelyWithoutConfirmQuit(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Fatal("q should quit at once when confirmQuit is off")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("expected tea.Quit's message")
 	}
 }

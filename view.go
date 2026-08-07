@@ -209,7 +209,14 @@ func renderTabs(m Model) string {
 		}
 		// Every tab carries its count, not just the active one: with several
 		// sections fetching at once, the counts are how you see what arrived.
-		label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
+		// Off by defaults.sectionsShowCount: false. visible() already folds in
+		// both the sprint prefix and the typed local filter - the count this
+		// shows is simply "how many rows this tab is drawing right now", which is
+		// the one count that never disagrees with what you see when you switch to
+		// the tab, and is simplest to state.
+		if *m.cfg.Defaults.SectionsShowCount {
+			label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
+		}
 		if i == m.active {
 			parts = append(parts, st.activeTab.Render(label))
 			continue

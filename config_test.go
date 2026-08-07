@@ -60,6 +60,69 @@ defaults:
 	}
 }
 
+// The refetch interval defaults to 30 minutes when the key is omitted, and
+// each of the three other observable states - a positive value, an explicit 0
+// disabling it, and sectionsShowCount's own default - needs its own assertion
+// because a plain int could not tell "omitted" from "explicitly 0" apart; that
+// is why the field is a pointer.
+func TestLoadConfigDefaultsRefetchIntervalAndShowCount(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser()
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.RefetchIntervalMinutes; got == nil || *got != 30 {
+		t.Errorf("refetchIntervalMinutes = %v, want the default 30", got)
+	}
+	if got := cfg.Defaults.SectionsShowCount; got == nil || !*got {
+		t.Error("sectionsShowCount should default to true")
+	}
+	if cfg.Defaults.ConfirmQuit {
+		t.Error("confirmQuit should default to false")
+	}
+}
+
+func TestLoadConfigKeepsExplicitRefetchIntervalZero(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser()
+defaults:
+  refetchIntervalMinutes: 0
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.RefetchIntervalMinutes; got == nil || *got != 0 {
+		t.Errorf("refetchIntervalMinutes = %v, want the explicit 0 to survive defaulting", got)
+	}
+}
+
+func TestLoadConfigKeepsExplicitSectionsShowCountFalse(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser()
+defaults:
+  sectionsShowCount: false
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.SectionsShowCount; got == nil || *got {
+		t.Error("sectionsShowCount: false must survive defaulting")
+	}
+}
+
 func TestLoadConfigRejectsInvalidNumericAndEnumSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name, extra string
@@ -68,6 +131,7 @@ func TestLoadConfigRejectsInvalidNumericAndEnumSettings(t *testing.T) {
 		{"negative default limit", "defaults:\n  limit: -1\n"},
 		{"preview width outside ratio", "defaults:\n  preview:\n    width: 1.2\n"},
 		{"unsupported preview position", "defaults:\n  preview:\n    position: left\n"},
+		{"negative refetch interval", "defaults:\n  refetchIntervalMinutes: -1\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := "jiraSections:\n  - title: Mine\n    jql: project = ABC\n" + tc.extra

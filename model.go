@@ -21,6 +21,35 @@ const fetchConcurrency = 4
 // fetchTimeout stops a hung call from leaving a section spinning forever.
 const fetchTimeout = 15 * time.Second
 
+// uiTickInterval redraws the dashboard on a plain clock rather than only on
+// input or a fetch landing. Its one job is to keep the relative ages in the
+// Updated column and the preview header from freezing between keypresses -
+// bubbletea only repaints on a message, and without this one an idle terminal
+// otherwise sits on the frame from whenever something last happened. Used only
+// when defaults.refetchIntervalMinutes is 0: the auto-refetch tick already
+// forces exactly this redraw on its own schedule, so a second clock alongside
+// it would be pure waste.
+const uiTickInterval = time.Minute
+
+// confirmQuitPrompt is what the footer says while defaults.confirmQuit is
+// waiting on a second q/ctrl+c. Named so Update's set and its clear cannot say
+// two different strings.
+const confirmQuitPrompt = "press q again to quit"
+
+// tickMsg drives both auto-refetch (gh-dash's defaults.refetchIntervalMinutes)
+// and the plain redraw clock above; refetch tells Update which job this tick
+// is for. Only Init ever starts this loop, and the handler below is the only
+// place that reschedules it - unlike the spinner, which a keypress can restart
+// mid-flight, nothing else here can start a second copy, so there is no
+// pileup to tag a generation against.
+type tickMsg struct{ refetch bool }
+
+// tickCmd schedules one tick after d. Called both from Init to start the loop
+// and from the tickMsg case to keep it going.
+func tickCmd(d time.Duration, refetch bool) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{refetch: refetch} })
+}
+
 var fetchSem = make(chan struct{}, fetchConcurrency)
 
 type sectionState struct {
@@ -191,6 +220,13 @@ type Model struct {
 	showHelp bool
 	status   string
 
+	// pendingQuit backs defaults.confirmQuit: the first q/ctrl+c arms it and
+	// leaves a prompt in the footer instead of quitting; any other key disarms
+	// it again. Kept as a bool rather than folded into pendingG's flag because the
+	// two are unrelated motions that could otherwise be pressed in the same
+	// sequence (q after gg, say) and would then clear each other.
+	pendingQuit bool
+
 	// spinner animates while any section is in flight. Its tick loop is only
 	// kept alive while something is loading: an idle dashboard that wakes up
 	// several times a second to redraw the same frame is pure waste.
@@ -242,13 +278,27 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 // Init fetches every section at once. The rows already seeded from cache are on
 // screen by then, so what these replace is visible rather than blank.
 func (m Model) Init() tea.Cmd {
-	// +1 for the spinner tick: every section starts out loading, so the
-	// animation has to be running from the first frame.
-	cmds := make([]tea.Cmd, 0, len(m.sections)+1)
+	// +2 for the spinner tick (every section starts out loading, so the
+	// animation has to be running from the first frame) and the clock tick that
+	// keeps ages live and, if configured, drives auto-refetch.
+	cmds := make([]tea.Cmd, 0, len(m.sections)+2)
 	for i, s := range m.sections {
 		cmds = append(cmds, fetchSection(m.searcher, i, s.fetchSeq, s.cfg))
 	}
-	return tea.Batch(append(cmds, m.spinner.Tick)...)
+	cmds = append(cmds, m.spinner.Tick, m.nextTick())
+	return tea.Batch(cmds...)
+}
+
+// nextTick schedules the one clock tick that is currently in flight: a
+// refetch tick on defaults.refetchIntervalMinutes when that is nonzero, or
+// else the lighter UI-only redraw tick. Read from cfg on every call rather
+// than cached on the model, so the mode can never drift from what LoadConfig
+// actually validated.
+func (m Model) nextTick() tea.Cmd {
+	if n := *m.cfg.Defaults.RefetchIntervalMinutes; n > 0 {
+		return tickCmd(time.Duration(n)*time.Minute, true)
+	}
+	return tickCmd(uiTickInterval, false)
 }
 
 func fetchSection(s Searcher, idx, seq int, sec Section) tea.Cmd {
@@ -355,6 +405,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshDetail(false)
 		}
 		return m, nil
+
+	case tickMsg:
+		if !msg.refetch {
+			// A plain redraw clock: the tick itself is enough to unfreeze the ages
+			// (Update returning a new model repaints), there is nothing to fetch.
+			return m, m.nextTick()
+		}
+		// Refetch every section the way r refetches one, reusing fetchSection and
+		// nextFetch so the same fetchSeq staleness guard applies to a reply that
+		// lands after another refetch - manual or this tick's next lap - has
+		// already superseded it. Unlike r this does not blank the rows first: r's
+		// blank-while-loading is right for a refresh you asked for and are looking
+		// at, but a background tick firing every few minutes should not make the
+		// screen flash empty for issues that have not actually changed.
+		cmds := make([]tea.Cmd, 0, len(m.sections)+2)
+		for i := range m.sections {
+			m.sections[i].loading = true
+			cmds = append(cmds, fetchSection(m.searcher, i, m.nextFetch(i), m.sections[i].cfg))
+		}
+		return m, tea.Batch(append(cmds, m.spinner.Tick, m.nextTick())...)
 
 	case spinner.TickMsg:
 		// The loop ends by simply not scheduling the next tick. bubbles guards
@@ -535,8 +605,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingG = false
 	}
 
+	// Any key other than the second q/ctrl+c cancels a pending confirmQuit the
+	// same way any key other than a second g disarms pendingG above - except the
+	// quit case itself, which the switch below still needs to see armed.
+	if m.pendingQuit && msg.String() != "q" && msg.String() != "ctrl+c" {
+		m.pendingQuit = false
+		if m.status == confirmQuitPrompt {
+			m.status = ""
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
+		if m.cfg.Defaults.ConfirmQuit && !m.pendingQuit {
+			m.pendingQuit = true
+			m.status = confirmQuitPrompt
+			return m, nil
+		}
 		return m, tea.Quit
 	// h/l and the arrows are gh-dash's section keys; tab/shift+tab are kept
 	// because they are what the help line has always advertised.

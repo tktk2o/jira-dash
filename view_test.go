@@ -29,6 +29,24 @@ func TestRenderTabsMarksTheActiveSectionWithItsCount(t *testing.T) {
 	}
 }
 
+// defaults.sectionsShowCount: false is the escape hatch for the count
+// TestRenderTabsMarksTheActiveSectionWithItsCount asserts above.
+func TestRenderTabsOmitsCountWhenSectionsShowCountIsFalse(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1", "ABC-2"), at: time.Now()})
+	m = next.(Model)
+	off := false
+	m.cfg.Defaults.SectionsShowCount = &off
+
+	out := renderTabs(m)
+	if strings.Contains(out, "(2)") {
+		t.Errorf("sectionsShowCount: false should drop the count: %q", out)
+	}
+	if !strings.Contains(out, "Mine") {
+		t.Errorf("the title itself should still be there: %q", out)
+	}
+}
+
 // Bold plus a row count was too weak a cue to notice: switching sections read
 // as "tab does nothing" on a live dashboard, because both sections opened on
 // the same first issue. The active tab carries the selection background, the
