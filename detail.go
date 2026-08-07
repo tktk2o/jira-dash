@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -231,13 +232,24 @@ func renderComments(comments []Comment, now time.Time, width int, ps previewStyl
 	return strings.Join(out, "\n")
 }
 
+// markdownRendererCache holds one glamour renderer per width, since building
+// one re-parses the whole style sheet - wasted work when the width (and thus
+// the renderer's word-wrap) is unchanged across a selection change. Guarded by
+// a mutex even though every call today comes from Update's goroutine, so a
+// future caller off that goroutine cannot corrupt the map.
+var (
+	markdownRendererMu    sync.Mutex
+	markdownRendererCache = map[int]*glamour.TermRenderer{}
+)
+
 // renderMarkdown styles the body, falling back to the raw text when glamour
 // cannot build a renderer - an unstyled description beats an empty pane.
 func renderMarkdown(md string, width int) string {
 	if width <= 0 {
 		width = 80
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dracula"), glamour.WithWordWrap(width))
+
+	r, err := markdownRenderer(width)
 	if err != nil {
 		return md
 	}
@@ -246,4 +258,21 @@ func renderMarkdown(md string, width int) string {
 		return md
 	}
 	return out
+}
+
+// markdownRenderer returns the cached renderer for width, building and
+// caching one on first use.
+func markdownRenderer(width int) (*glamour.TermRenderer, error) {
+	markdownRendererMu.Lock()
+	defer markdownRendererMu.Unlock()
+
+	if r, ok := markdownRendererCache[width]; ok {
+		return r, nil
+	}
+	r, err := glamour.NewTermRenderer(glamour.WithStandardStyle("dracula"), glamour.WithWordWrap(width))
+	if err != nil {
+		return nil, err
+	}
+	markdownRendererCache[width] = r
+	return r, nil
 }

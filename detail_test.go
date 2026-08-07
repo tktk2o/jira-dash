@@ -153,6 +153,24 @@ func TestRenderMarkdownFallsBackToPlainText(t *testing.T) {
 	}
 }
 
+// The renderer is expensive to build, and selectionChanged calls renderMarkdown
+// on every cursor move - reusing the one for an unchanged width is the whole
+// point of caching it.
+func TestRenderMarkdownReusesRendererForSameWidth(t *testing.T) {
+	const width = 73 // unlikely to collide with another test's width
+	before, err := markdownRenderer(width)
+	if err != nil {
+		t.Fatalf("markdownRenderer: %v", err)
+	}
+	after, err := markdownRenderer(width)
+	if err != nil {
+		t.Fatalf("markdownRenderer: %v", err)
+	}
+	if before != after {
+		t.Error("same width should return the cached renderer, not build a new one")
+	}
+}
+
 // The preview used to be raw `jira get` markdown. The header answers "what am I
 // looking at" from data the search already returned, so it costs no extra call.
 func TestPreviewHeaderCarriesTheIssueAtAGlance(t *testing.T) {
