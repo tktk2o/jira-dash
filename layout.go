@@ -59,7 +59,7 @@ func (m Model) bottomPreviewHeight() int {
 	if m.previewPosition() == "right" || !m.previewShown() {
 		return 0
 	}
-	room := max(0, m.height-5-m.chromeLines()-minTableRows)
+	room := max(0, m.height-fixedChromeLines-m.chromeLines()-minTableRows)
 	return bottomPreviewChrome + min(m.cfg.Defaults.Preview.HeightLines, room)
 }
 

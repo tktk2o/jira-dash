@@ -75,8 +75,8 @@ startup.
   as bad instead
 - **Duplicate key bindings** — `create` and `keybindings.issues` sharing a key, or
   either one claiming a key the dashboard itself already uses (`j` / `/` / `q` / `r`,
-  etc). Whichever side loses silently loses based on `handleKey`'s evaluation order,
-  so the only moment the losing side is visible at all is startup
+  `e`, etc). Whichever side loses silently loses based on `handleKey`'s evaluation
+  order, so the only moment the losing side is visible at all is startup
 - **A missing `dir`** — same reasoning as above
 - **Empty values** — a section with no title/jql, a `create` entry with no type, a
   keybinding with no command
@@ -90,10 +90,46 @@ startup.
 | `p` | Toggle preview |
 | `ctrl+d` / `ctrl+u` | Scroll the preview by half a screen (the row cursor doesn't move) |
 | `/` | Filter (`esc` to clear). Does not refetch |
+| `e` | Edit the active section's JQL in the search box (session-only) |
 | `r` | Refetch this section |
 | `y` / `Y` | Copy the issue key / URL |
 | `?` | Help |
 | `q` | Quit |
+
+### JQL search box (`e`)
+
+A full-width, bordered search box sits between the tab bar and the column header,
+always visible. It shows the active section's *effective* JQL — the override if
+one is currently set, otherwise the section's own configured `jql` — with the
+`sprintPrefix` appended after a `·` separator when the section has one.
+
+`e` focuses the box for editing. `enter` refetches the section with the edited
+JQL; `esc` cancels without changing anything. Submitting an empty (or
+whitespace-only) query clears the override, reverting to the section's
+configured JQL, and refetches.
+
+The edit is **session-only and per-section**: nothing is ever written to
+`config.yml`, so restarting the dashboard returns every section to its
+configured JQL. For as long as an override is set, manual `r`, the
+auto-refresh tick, and the description prefetch that follows a landed fetch
+all use it in place of the configured JQL — none of them can drift back to
+the file's own query while the box shows an edited one.
+
+While a section is overridden, the box's icon gains a `*` (`🔍*` instead of
+`🔍`) so it's obvious the rows on screen no longer match what `config.yml`
+says.
+
+An invalid JQL surfaces as Jira's own error in the footer, with the section's
+previous rows left on screen rather than cleared.
+
+Switching sections (`tab` / `shift+tab` / `h` / `l` / arrows) while editing
+cancels the edit first — an override is per-section, and a half-typed query
+has no obvious "commit to which tab" once the active section changes under
+it.
+
+**Breaking change**: `e` is now a reserved, built-in key. A
+`keybindings.issues` or `create` entry that binds `e` now fails at startup
+with "already a dashboard key" — rename that binding before upgrading.
 
 ### Working directory (`dir`)
 

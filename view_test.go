@@ -73,19 +73,25 @@ func TestPreviewIsDividedByARuleNotABox(t *testing.T) {
 	next, _ = m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: time.Now()})
 	m = next.(Model)
 
-	out := plain(m.View())
-	if strings.ContainsAny(out, "╭╮╰╯") {
-		t.Errorf("the preview should not be boxed: %q", out)
+	// The search box above the table legitimately draws its own rounded
+	// border - tabs, the rule, then the box's searchBoxChrome lines, then the
+	// column header - so only the table/preview region below that is checked
+	// for a box the preview itself must not have.
+	lines := strings.Split(plain(m.View()), "\n")
+	topChrome := 2 + searchBoxChrome
+	body := strings.Join(lines[topChrome:], "\n")
+	if strings.ContainsAny(body, "╭╮╰╯") {
+		t.Errorf("the preview should not be boxed: %q", body)
 	}
 	// The divider has to reach every line of the pane, not just the first.
 	divided := 0
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range strings.Split(body, "\n") {
 		if strings.Contains(line, "│") {
 			divided++
 		}
 	}
 	if divided < 5 {
-		t.Errorf("only %d lines carry the divider: %q", divided, out)
+		t.Errorf("only %d lines carry the divider: %q", divided, body)
 	}
 }
 
@@ -501,37 +507,53 @@ func TestEveryTabCarriesItsCount(t *testing.T) {
 
 // The JQL is what a section *is*, and it is otherwise invisible: two tabs can
 // look alike and query completely different things.
-func TestQueryLineShowsTheJQLAndThePrefix(t *testing.T) {
+func TestSearchBoxShowsTheJQLAndThePrefix(t *testing.T) {
 	m := settled(newTestModel(t, fakeSearcher{}))
 	m.sections[0].cfg.SprintPrefix = "Team"
 
-	line := renderQueryLine(m, 120)
+	box := renderSearchBox(m, 120)
 
-	if !strings.Contains(line, "assignee = currentUser()") {
-		t.Errorf("the query line should carry the JQL: %q", line)
+	if !strings.Contains(box, "assignee = currentUser()") {
+		t.Errorf("the search box should carry the JQL: %q", box)
 	}
-	if !strings.Contains(line, "Team") {
-		t.Errorf("it should carry the sprint prefix, which narrows the JQL: %q", line)
+	if !strings.Contains(box, "Team") {
+		t.Errorf("it should carry the sprint prefix, which narrows the JQL: %q", box)
 	}
 }
 
-// As a bordered box this spent three of the screen's lines - and truncated the
-// JQL anyway - on a fact that never changes while you are on the tab.
-func TestQueryLineIsOneUnframedLine(t *testing.T) {
+// The box is a fixed three lines - a border, the query, a border - regardless
+// of how long the JQL is or how narrow the terminal gets; a long query is
+// truncated rather than wrapped or left to grow the box.
+func TestSearchBoxIsThreeLinesAndNeverWiderThanGiven(t *testing.T) {
 	m := settled(newTestModel(t, fakeSearcher{}))
 	m.sections[0].cfg.JQL = strings.Repeat("project = ABCDEF AND ", 20)
 
 	for _, w := range []int{40, 80, 120} {
-		out := renderQueryLine(m, w)
-		if strings.Contains(out, "\n") {
-			t.Errorf("width %d: the query should stay on one line: %q", w, out)
+		out := renderSearchBox(m, w)
+		if got := strings.Count(out, "\n") + 1; got != searchBoxChrome {
+			t.Errorf("width %d: box is %d lines, want %d", w, got, searchBoxChrome)
 		}
-		if strings.ContainsAny(out, "╭╰│") {
-			t.Errorf("width %d: the query line should carry no frame: %q", w, out)
+		for _, line := range strings.Split(out, "\n") {
+			if got := runewidth.StringWidth(line); got > w {
+				t.Errorf("width %d: line is %d cells: %q", w, got, line)
+			}
 		}
-		if got := runewidth.StringWidth(out); got > w {
-			t.Errorf("width %d: line is %d cells: %q", w, got, out)
-		}
+	}
+}
+
+// The theme has no colour field for "this section's JQL has diverged from the
+// config", so divergence is a marker instead - and it must only appear once
+// the section actually has an override, not merely because the box drew.
+func TestSearchBoxMarksDivergenceOnlyWhenOverridden(t *testing.T) {
+	m := settled(newTestModel(t, fakeSearcher{}))
+
+	if strings.Contains(renderSearchBox(m, 120), "*") {
+		t.Error("no override yet: the box should not show the divergence marker")
+	}
+
+	m.sections[0].jqlOverride = "assignee = someoneElse()"
+	if !strings.Contains(renderSearchBox(m, 120), "*") {
+		t.Error("an override should mark the box as diverged")
 	}
 }
 

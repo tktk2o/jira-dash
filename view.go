@@ -222,28 +222,60 @@ func renderTabs(m Model) string {
 	return strings.Join(parts, "│")
 }
 
-// renderQueryLine shows what the section actually asks Jira for. Two tabs can
-// look alike and query entirely different things, and sprintPrefix narrows the
-// result after the query, so it belongs here too or the row count looks wrong
-// for the JQL beside it.
+// renderSearchBox is the gh-dash-style search box between the tab bar and the
+// column header: always visible, showing the active section's effective JQL
+// (the override if `e` has set one, otherwise the config's own query) inside
+// a rounded border. sprintPrefix is appended the same way the old one-line
+// renderQueryLine appended it, when it fits, because it narrows the result
+// after the query and the row count beside it would otherwise look wrong for
+// the JQL shown.
 //
-// One line, no frame. As a bordered box this cost three of the screen's lines
-// and still truncated the JQL, for a fact that does not change while you are on
-// the tab. The JQL is folded onto that line because a config may write it
-// across several with YAML's >- and the newlines would break the layout.
-func renderQueryLine(m Model, width int) string {
-	sec := m.sections[m.active].cfg
-	query := strings.Join(strings.Fields(sec.JQL), " ")
-	if sec.SprintPrefix != "" {
-		query += "  ·  sprint ^ " + sec.SprintPrefix
+// The theme has exactly four colour fields - text.primary/secondary,
+// background.selected, border.primary - and none of them is "this box has
+// diverged from the config". Rather than reusing one of those four for a
+// meaning it was not named for, divergence is a "*" after the icon instead: a
+// marker reads unambiguously in any theme, where border.primary would just
+// look like an unexplained colour change.
+func renderSearchBox(m Model, width int) string {
+	s := m.sections[m.active]
+	secondary := lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4"))
+	border := lipgloss.Color(orDefault(m.cfg.Theme.Colors.Border.Primary, "#bd93f9"))
+
+	// 2 for the border's own columns, 2 for the padding inside it - the same
+	// count renderPromptBox uses.
+	innerWidth := max(0, width-4)
+
+	icon := "🔍 "
+	if !m.editingJQL && s.jqlOverride != "" {
+		icon = "🔍*"
 	}
 
-	// Indented to the column header's left edge, so the chrome above the table
-	// shares one margin.
-	indent := strings.Repeat(" ", leftMargin)
-	st := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(orDefault(m.cfg.Theme.Colors.Text.Secondary, "#6272a4")))
-	return st.Render(indent + Truncate("jql  "+query, max(0, width-leftMargin)))
+	var content string
+	if m.editingJQL {
+		m.jqlDraft.Width = max(1, innerWidth-runewidth.StringWidth(icon))
+		content = icon + m.jqlDraft.View()
+	} else {
+		eff := s.effective()
+		query := strings.Join(strings.Fields(eff.JQL), " ")
+		if eff.SprintPrefix != "" {
+			query += "  ·  sprint ^ " + eff.SprintPrefix
+		}
+		st := lipgloss.NewStyle().Foreground(secondary)
+		content = st.Render(icon + Truncate(query, max(0, innerWidth-runewidth.StringWidth(icon))))
+	}
+
+	// Width takes the block's own padding into account already - Padding(0, 1)
+	// then Width(w) means w is the padded width, so this asks for width-2 (the
+	// border's two columns only) rather than innerWidth (which also removed
+	// the padding). Passing innerWidth here double-subtracts the padding and
+	// makes lipgloss wrap a line that exactly fills it onto a second line -
+	// TestSearchBoxIsThreeLinesAndNeverWiderThanGiven is what caught that.
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(0, 1).
+		Width(max(0, width-2)).
+		Render(content)
 }
 
 // column is one of the six fixed-width columns to the left of Summary: its
@@ -493,6 +525,8 @@ func (m Model) View() string {
 			renderChoices(m, max(0, tableWidth-6)),
 			"type to filter ⋅ ↑/↓ move ⋅ enter select ⋅ esc cancel", tableWidth)
 		prompting = false
+	case m.editingJQL:
+		promptLine, prompting = "enter: refetch  esc: cancel", true
 	case m.filtering:
 		promptLine = "/" + m.filterDraft
 	case s.filter != "":
@@ -526,7 +560,10 @@ func (m Model) View() string {
 	sections := []string{
 		renderTabs(m),
 		st.rule.Render(strings.Repeat("━", max(0, m.width))),
-		renderQueryLine(m, tableWidth),
+		// Spans the terminal, not the table, so it lines up with the rule above it
+		// rather than stopping in mid-air over the preview - gh-dash's search bar
+		// caps the whole frame the same way.
+		renderSearchBox(m, m.width),
 		st.header.Render(strings.Repeat(" ", leftMargin) + renderColumnHeader(cols, rowWidth)),
 		body,
 	}
@@ -566,6 +603,11 @@ func (m Model) promptLines() int {
 	case m.choosing:
 		// +1 for the filter/count line renderChoices draws above the list.
 		return promptBoxChrome + 1 + chooseHeight(len(m.visibleChoices()))
+	case m.editingJQL:
+		// Same one-line footer hint style as the filter's, not a box: the box
+		// itself is renderSearchBox, drawn separately above the table and
+		// counted in the fixed chrome tableHeight already subtracts.
+		return 1
 	case m.filtering, m.sections[m.active].filter != "":
 		// The filter stays one line. It is a phrase, not a message, and a box
 		// around it would take eight lines of the list to hold six characters.
@@ -592,14 +634,20 @@ func (m Model) helpHeight() int {
 	return len(layoutHelp(helpEntries(m), m.tableWidth(), st.header, st.footer))
 }
 
+// fixedChromeLines is the part of the frame around the table that never
+// changes shape: the tab strip, the rule under it, the search box
+// (searchBoxChrome lines, not one - see renderSearchBox), and the column
+// header above the table, plus the footer below it. What does vary -
+// prompts/filter/help - is m.chromeLines(), subtracted alongside this.
+const fixedChromeLines = 2 + searchBoxChrome + 1 + 1
+
 // tableHeight is how many row lines fit once the chrome has taken its share.
 // Without this the rows simply ran past the bottom of the terminal and the tab
 // strip was pushed off the top - a 41-issue section on a 45-line terminal had
 // already lost it. A "bottom" preview pane takes its own share too, the same
 // way the chrome above and below the table does.
 func (m Model) tableHeight() int {
-	// The tab strip, the rule, the query line, the column header, the footer.
-	return max(1, m.height-5-m.chromeLines()-m.bottomPreviewHeight())
+	return max(1, m.height-fixedChromeLines-m.chromeLines()-m.bottomPreviewHeight())
 }
 
 // windowRows keeps the cursor on screen by holding it in the middle of the
