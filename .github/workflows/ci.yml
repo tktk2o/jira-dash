@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # go.mod の go ディレクティブを唯一の真実にする。ここにバージョンを
           # 書くと go.mod を上げた時に片方だけ古いまま気付かない。
