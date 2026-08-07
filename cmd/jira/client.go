@@ -25,6 +25,7 @@ type jiraClient interface {
 	Transitions(ctx context.Context, key string) ([]jirapkg.Transition, error)
 	Transition(ctx context.Context, key, statusName string) error
 	AssignableUsers(ctx context.Context, issueKey, query string) ([]jirapkg.User, error)
+	JQLSuggestions(ctx context.Context, fieldName, fieldValue string) ([]jirapkg.Suggestion, error)
 }
 
 // newClient resolves credentials and builds the real client. Kept as a

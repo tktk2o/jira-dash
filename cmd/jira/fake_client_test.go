@@ -29,6 +29,8 @@ type fakeClient struct {
 	transitionErr   error
 	assignableUsers []jirapkg.User
 	assignableErr   error
+	jqlSuggestions  []jirapkg.Suggestion
+	jqlSuggestErr   error
 
 	// calls records every method invoked, in order, so a test can assert
 	// none of the mutating ones ran (--dry-run) or exactly one did.
@@ -42,6 +44,9 @@ type fakeClient struct {
 	lastEditKey       string
 	lastEditInput     jirapkg.Edit
 	lastTransitionTo  string
+
+	lastJQLFieldName  string
+	lastJQLFieldValue string
 }
 
 func (f *fakeClient) IssueWithDescription(
@@ -97,4 +102,10 @@ func (f *fakeClient) Transition(ctx context.Context, key, statusName string) err
 func (f *fakeClient) AssignableUsers(ctx context.Context, issueKey, query string) ([]jirapkg.User, error) {
 	f.calls = append(f.calls, "AssignableUsers")
 	return f.assignableUsers, f.assignableErr
+}
+
+func (f *fakeClient) JQLSuggestions(ctx context.Context, fieldName, fieldValue string) ([]jirapkg.Suggestion, error) {
+	f.calls = append(f.calls, "JQLSuggestions")
+	f.lastJQLFieldName, f.lastJQLFieldValue = fieldName, fieldValue
+	return f.jqlSuggestions, f.jqlSuggestErr
 }

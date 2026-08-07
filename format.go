@@ -69,11 +69,30 @@ func TypeIcon(issueType string) string {
 	}
 }
 
-// PreviewVisible answers whether the preview pane fits. The config wins when
-// it says closed; otherwise the terminal decides.
+// PreviewVisible answers whether a "right" preview pane fits. The config wins
+// when it says closed; otherwise the terminal decides. A "bottom" pane has no
+// such question - it costs the table no horizontal room - so this is only
+// ever consulted for the "right" case; see Model.previewShown.
 func PreviewVisible(configOpen bool, totalWidth int, ratio float64) bool {
 	if !configOpen {
 		return false
 	}
 	return totalWidth-int(float64(totalWidth)*ratio) >= minTableWidth
+}
+
+// PreviewPosition resolves defaults.preview.position to where the pane
+// actually draws for a terminal this wide. "right" and "bottom" pass through
+// unchanged; "auto" becomes "right" at or above minTableWidth - the same
+// boundary a plain "right" pane already used to decide whether it fit beside
+// the table - and "bottom" below it. Before this, a narrow terminal closed a
+// "right" pane outright; "auto" replaces that closing with moving it under
+// the table instead, while plain "right" keeps closing exactly as before.
+func PreviewPosition(position string, totalWidth int) string {
+	if position != "auto" {
+		return position
+	}
+	if totalWidth >= minTableWidth {
+		return "right"
+	}
+	return "bottom"
 }

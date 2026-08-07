@@ -83,6 +83,13 @@ func run(configFlag, section string) error {
 	return err
 }
 
+// resolveConfigPath's priority is: --config flag, then JIRA_DASH_CONFIG, then
+// a repo-scoped .jira-dash.yml/.yaml in the current directory, then the
+// default under home. The repo file is deliberately not merged with the
+// default the way gh-dash merges its own repo-scoped config: merging means
+// guessing which keys a partial file meant to override, and a wrong guess is
+// a silent, hard-to-notice bug. Wholesale replacement has one rule ("this file,
+// if present, is the whole config") instead of a merge policy to get right.
 func resolveConfigPath(flagValue, env, home string) string {
 	if flagValue != "" {
 		return expandHome(flagValue, home)
@@ -90,7 +97,21 @@ func resolveConfigPath(flagValue, env, home string) string {
 	if env != "" {
 		return expandHome(env, home)
 	}
+	if repo := repoConfigPath(); repo != "" {
+		return repo
+	}
 	return filepath.Join(home, ".config", "jira-dash", "config.yml")
+}
+
+// repoConfigPath returns ./.jira-dash.yml or ./.jira-dash.yaml if either
+// exists in the current working directory, or "" if neither does.
+func repoConfigPath() string {
+	for _, name := range []string{".jira-dash.yml", ".jira-dash.yaml"} {
+		if _, err := os.Stat(name); err == nil {
+			return name
+		}
+	}
+	return ""
 }
 
 // expandHome resolves a leading ~ itself. An interactive shell normally does

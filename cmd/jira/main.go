@@ -36,6 +36,7 @@ var usageLines = []string{
 	"  comment list <key>     list an issue's comments",
 	"  transitions <key>      list the statuses an issue can move to",
 	"  users assignable <key> list users who can be assigned an issue",
+	"  jql suggest <field> [value] suggest JQL values for a field",
 	"  auth login|status      manage credentials",
 	"",
 	"  -v, --version          print the version and exit",
@@ -109,4 +110,5 @@ var subcommands = map[string]func(ctx context.Context, client jiraClient, args [
 	"comment":     runComment,
 	"transitions": runTransitions,
 	"users":       runUsers,
+	"jql":         runJQL,
 }

@@ -27,13 +27,6 @@ const (
 	// untruncated one.
 	colAssignee = 10
 	colUpdated  = 4 // "365d"
-	colGaps     = 6 // single spaces between the six columns and the summary
-
-	// Everything to the left of the summary. Named so the column header and the
-	// row cannot drift apart: a header that does not line up with its rows is
-	// worse than none.
-	rowFixedWidth = colKey + colIcon + colStatus + colPoints +
-		colAssignee + colUpdated + colGaps
 
 	// The gutter View draws in front of every row. It is not a cursor column -
 	// the selected row's fill covers it, the way gh-dash's does - it is the
@@ -45,6 +38,10 @@ const (
 	// before it. gh-dash divides its panes with one line rather than boxing the
 	// preview, which is also what lets the rule above span the terminal.
 	previewChrome = 3
+	// bottomPreviewChrome is what a preview pane stacked below the table costs
+	// vertically: the one rule dividing table from pane, laid across rather than
+	// down the way the "right" divider is.
+	bottomPreviewChrome = 1
 	// The prompt box, laid out like gh-dash's "Approve with comment…": a border,
 	// a title, a blank line, the input, a blank line, and the keys that work
 	// inside it. Everything but the input is fixed, so promptBoxChrome plus the
@@ -209,7 +206,14 @@ func renderTabs(m Model) string {
 		}
 		// Every tab carries its count, not just the active one: with several
 		// sections fetching at once, the counts are how you see what arrived.
-		label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
+		// Off by defaults.sectionsShowCount: false. visible() already folds in
+		// both the sprint prefix and the typed local filter - the count this
+		// shows is simply "how many rows this tab is drawing right now", which is
+		// the one count that never disagrees with what you see when you switch to
+		// the tab, and is simplest to state.
+		if *m.cfg.Defaults.SectionsShowCount {
+			label = fmt.Sprintf("%s (%d)", label, len(s.visible()))
+		}
 		if i == m.active {
 			parts = append(parts, st.activeTab.Render(label))
 			continue
@@ -243,19 +247,67 @@ func renderQueryLine(m Model, width int) string {
 	return st.Render(indent + Truncate("jql  "+query, max(0, width-leftMargin)))
 }
 
+// column is one of the six fixed-width columns to the left of Summary: its
+// name (as defaults.columns spells it) and the cell width the rest of the
+// table already fixes it at.
+type column struct {
+	name  string
+	width int
+}
+
+// allColumns is every fixed-width column, in the order the table always
+// renders them - defaults.columns can drop entries from this list, never
+// reorder it, so callers filter this slice rather than build their own.
+var allColumns = []column{
+	{"key", colKey},
+	{"type", colIcon},
+	{"status", colStatus},
+	{"points", colPoints},
+	{"assignee", colAssignee},
+	{"updated", colUpdated},
+}
+
+// visibleColumns is allColumns filtered down to what cfg asked to see, in
+// allColumns' own order.
+func visibleColumns(cfg Defaults) []column {
+	out := make([]column, 0, len(allColumns))
+	for _, c := range allColumns {
+		if cfg.ColumnVisible(c.name) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// fixedWidth is rowFixedWidth for whichever columns are visible: each
+// column's own width, plus the one gap before whatever comes after it
+// (another column, or Summary).
+func fixedWidth(cols []column) int {
+	w := 0
+	for _, c := range cols {
+		w += c.width + 1
+	}
+	return w
+}
+
 // renderColumnHeader labels the columns renderRow lays out, using the same
 // widths - a header that does not line up with its rows is worse than none.
-func renderColumnHeader(width int) string {
-	header := strings.Join([]string{
-		runewidth.FillRight("KEY", colKey),
-		runewidth.FillRight("T", colIcon),
-		runewidth.FillRight("STATUS", colStatus),
-		runewidth.FillLeft("SP", colPoints),
-		runewidth.FillRight("ASSIGNEE", colAssignee),
-		runewidth.FillLeft("AGE", colUpdated),
-		"SUMMARY",
-	}, " ")
-	return Truncate(header, width)
+func renderColumnHeader(cols []column, width int) string {
+	labels := map[string]string{
+		"key": "KEY", "type": "T", "status": "STATUS",
+		"points": "SP", "assignee": "ASSIGNEE", "updated": "AGE",
+	}
+	parts := make([]string, 0, len(cols)+1)
+	for _, c := range cols {
+		label := labels[c.name]
+		if c.name == "points" || c.name == "updated" {
+			parts = append(parts, runewidth.FillLeft(label, c.width))
+			continue
+		}
+		parts = append(parts, runewidth.FillRight(label, c.width))
+	}
+	parts = append(parts, "SUMMARY")
+	return Truncate(strings.Join(parts, " "), width)
 }
 
 // renderRow lays out one issue on one line, the summary taking whatever the
@@ -266,24 +318,35 @@ func renderColumnHeader(width int) string {
 // Padding goes through runewidth, not fmt: `%-*s` pads to a rune count, so a
 // Japanese summary would end up the wrong number of cells wide and the columns
 // would stop lining up between rows.
-func renderRow(i Issue, width int, now time.Time, rs rowStyles) string {
+func renderRow(i Issue, cols []column, width int, now time.Time, rs rowStyles) string {
 	chip := PriorityChip(i.Priority)
-	summary := chip + Truncate(i.Summary, max(0, width-rowFixedWidth-runewidth.StringWidth(chip)))
+	summary := chip + Truncate(i.Summary, max(0, width-fixedWidth(cols)-runewidth.StringWidth(chip)))
 
 	// Padded and truncated before styling, then styled per segment: measuring a
 	// string that already holds colour sequences counts them as cells.
-	cells := []struct {
+	type cell struct {
 		text  string
 		style lipgloss.Style
-	}{
-		{runewidth.FillRight(Truncate(i.Key, colKey), colKey), rs.key},
-		{runewidth.FillRight(TypeIcon(i.Type), colIcon), rs.meta},
-		{runewidth.FillRight(Truncate(i.Status, colStatus), colStatus), rs.meta},
-		{runewidth.FillLeft(StoryPointText(i.StoryPoints), colPoints), rs.meta},
-		{runewidth.FillRight(Truncate(i.AssigneeName(), colAssignee), colAssignee), rs.meta},
-		{runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated), rs.age},
-		{summary, rs.summary},
 	}
+	cells := make([]cell, 0, len(cols)+1)
+	for _, c := range cols {
+		switch c.name {
+		case "key":
+			cells = append(cells, cell{runewidth.FillRight(Truncate(i.Key, colKey), colKey), rs.key})
+		case "type":
+			cells = append(cells, cell{runewidth.FillRight(TypeIcon(i.Type), colIcon), rs.meta})
+		case "status":
+			cells = append(cells, cell{runewidth.FillRight(Truncate(i.Status, colStatus), colStatus), rs.meta})
+		case "points":
+			cells = append(cells, cell{runewidth.FillLeft(StoryPointText(i.StoryPoints), colPoints), rs.meta})
+		case "assignee":
+			cells = append(cells,
+				cell{runewidth.FillRight(Truncate(i.AssigneeName(), colAssignee), colAssignee), rs.meta})
+		case "updated":
+			cells = append(cells, cell{runewidth.FillLeft(RelTime(now, i.Updated.Time), colUpdated), rs.age})
+		}
+	}
+	cells = append(cells, cell{summary, rs.summary})
 
 	// The fixed columns alone are 46 cells, so a very narrow terminal cannot fit
 	// them. Cutting keeps the invariant that a row never draws wider than the
@@ -644,7 +707,8 @@ func (m Model) View() string {
 
 	// Through the model, so the prompt box - which is sized when it opens, not
 	// when it draws - cannot disagree with the table about how wide the pane is.
-	showPreview := PreviewVisible(m.previewOpen, m.width, m.cfg.Defaults.Preview.Width)
+	showPreview := m.previewShown()
+	previewPos := m.previewPosition()
 	tableWidth := m.tableWidth()
 
 	rows := make([]string, 0, len(s.visible()))
@@ -653,6 +717,7 @@ func (m Model) View() string {
 	// budget or every line would be two cells wider than the pane it was measured
 	// for.
 	rowWidth := tableWidth - leftMargin
+	cols := visibleColumns(m.cfg.Defaults)
 	unselected, selected := newRowStyles(m.cfg.Theme, false), newRowStyles(m.cfg.Theme, true)
 	for idx, issue := range s.visible() {
 		// No arrow: the fill marks the selected row on its own, which is how
@@ -663,7 +728,7 @@ func (m Model) View() string {
 			rs, gutter = selected, st.selectedRow
 		}
 		rows = append(rows, gutter.Render(strings.Repeat(" ", leftMargin))+
-			renderRow(issue, rowWidth, now, rs))
+			renderRow(issue, cols, rowWidth, now, rs))
 	}
 	if len(rows) == 0 {
 		// "(no issues)" and "loading" are different facts, and during a refresh
@@ -711,11 +776,18 @@ func (m Model) View() string {
 	rows = windowRows(rows, s.cursor, m.tableHeight())
 	table := strings.Join(rows, "\n")
 	body := table
-	if showPreview {
+	switch {
+	case showPreview && previewPos == "right":
 		// One rule between the panes, the way gh-dash divides them. Boxing the
 		// preview instead made it a separate object floating beside the table, and
 		// left the rule above meeting nothing on its far side.
 		body = lipgloss.JoinHorizontal(lipgloss.Top, table, " ", st.divider.Render(m.detail.View()))
+	case showPreview:
+		// Stacked below the table instead, full width: a "bottom" pane (explicit,
+		// or "auto" resolved to it for a narrow terminal) has no room to sit beside
+		// the table, so it takes the table's own width and a rule above it in
+		// place of the vertical divider a "right" pane draws.
+		body = table + "\n" + st.rule.Render(strings.Repeat("─", max(0, tableWidth))) + "\n" + m.detail.View()
 	}
 
 	// The chrome above the table, in the order gh-dash stacks it: tabs, a rule
@@ -727,7 +799,7 @@ func (m Model) View() string {
 		renderTabs(m),
 		st.rule.Render(strings.Repeat("━", max(0, m.width))),
 		renderQueryLine(m, tableWidth),
-		st.header.Render(strings.Repeat(" ", leftMargin) + renderColumnHeader(rowWidth)),
+		st.header.Render(strings.Repeat(" ", leftMargin) + renderColumnHeader(cols, rowWidth)),
 		body,
 	}
 	if promptLine != "" {
@@ -795,10 +867,11 @@ func (m Model) helpHeight() int {
 // tableHeight is how many row lines fit once the chrome has taken its share.
 // Without this the rows simply ran past the bottom of the terminal and the tab
 // strip was pushed off the top - a 41-issue section on a 45-line terminal had
-// already lost it.
+// already lost it. A "bottom" preview pane takes its own share too, the same
+// way the chrome above and below the table does.
 func (m Model) tableHeight() int {
 	// The tab strip, the rule, the query line, the column header, the footer.
-	return max(1, m.height-5-m.chromeLines())
+	return max(1, m.height-5-m.chromeLines()-m.bottomPreviewHeight())
 }
 
 // windowRows keeps the cursor on screen by holding it in the middle of the

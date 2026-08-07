@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,6 +40,92 @@ func TestResolveConfigPathExpandsTilde(t *testing.T) {
 	// Only a leading ~ is special; a path that merely contains one is left be.
 	if got := resolveConfigPath("/tmp/~weird.yml", "", home); got != "/tmp/~weird.yml" {
 		t.Errorf("mid-path ~ = %q, should be untouched", got)
+	}
+}
+
+// TestResolveConfigPathPrefersRepoFileOverDefault covers the repo-scoped
+// config: with neither --config nor JIRA_DASH_CONFIG set, a .jira-dash.yml in
+// the current directory beats the default path under home.
+func TestResolveConfigPathPrefersRepoFileOverDefault(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	if err := os.WriteFile(filepath.Join(dir, ".jira-dash.yml"), []byte("sections: []"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	home := "/home/someone"
+	if got, want := resolveConfigPath("", "", home), ".jira-dash.yml"; got != want {
+		t.Errorf("resolveConfigPath = %q, want %q", got, want)
+	}
+}
+
+// The .yaml spelling must be recognised too.
+func TestResolveConfigPathAcceptsYamlExtension(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	if err := os.WriteFile(filepath.Join(dir, ".jira-dash.yaml"), []byte("sections: []"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := resolveConfigPath("", "", "/home/someone"), ".jira-dash.yaml"; got != want {
+		t.Errorf("resolveConfigPath = %q, want %q", got, want)
+	}
+}
+
+// --config and JIRA_DASH_CONFIG are both explicit and must still win over a
+// repo file that happens to exist.
+func TestResolveConfigPathExplicitBeatsRepoFile(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	if err := os.WriteFile(filepath.Join(dir, ".jira-dash.yml"), []byte("sections: []"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	home := "/home/someone"
+	if got, want := resolveConfigPath("/flag.yml", "", home), "/flag.yml"; got != want {
+		t.Errorf("--config should still win, got %q", got)
+	}
+	if got, want := resolveConfigPath("", "/env.yml", home), "/env.yml"; got != want {
+		t.Errorf("JIRA_DASH_CONFIG should still win, got %q", got)
+	}
+}
+
+// With no repo file present, the default path under home is unchanged.
+func TestResolveConfigPathFallsBackToDefaultWithNoRepoFile(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	home := "/home/someone"
+	want := filepath.Join(home, ".config", "jira-dash", "config.yml")
+	if got := resolveConfigPath("", "", home); got != want {
+		t.Errorf("resolveConfigPath = %q, want %q", got, want)
+	}
+}
+
+// chdir switches to dir and returns a func that restores the previous
+// working directory - t.Chdir would do this automatically, but it panics
+// with subtests that run in parallel elsewhere in this package, so tests
+// here manage it by hand.
+func chdir(t *testing.T, dir string) func() {
+	t.Helper()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := os.Chdir(prev); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

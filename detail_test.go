@@ -90,6 +90,57 @@ func TestCurrentDebounceTickLoadsTheIssue(t *testing.T) {
 	}
 }
 
+// selectionChanged serves the body immediately from a prefetch hit, and the
+// debounced tick that follows must then skip the network fetch entirely -
+// only the comments still go out.
+func TestSelectionChangedServesAPrefetchHitWithoutAFetch(t *testing.T) {
+	fake := fakeSearcher{err: errTest} // any body fetch here should fail the test
+	m := newTestModel(t, fake)
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: time.Now()})
+	m = next.(Model)
+	m.prefetch = map[string]string{"ABC-1": "# prefetched body"}
+
+	m.selectionChanged()
+
+	if !m.detailBodyDone {
+		t.Fatal("a prefetch hit should mark the body done immediately, with no debounce wait")
+	}
+	if m.detailBody != "# prefetched body" {
+		t.Errorf("detailBody = %q", m.detailBody)
+	}
+
+	_, cmd := m.Update(debounceMsg{seq: m.detailSeq, key: "ABC-1"})
+	if cmd == nil {
+		t.Fatal("the comments still need their own call")
+	}
+	if _, isBatch := cmd().(tea.BatchMsg); isBatch {
+		t.Error("a prefetch hit should skip loadIssue - the debounce tick must not batch two commands")
+	}
+	if msg, ok := cmd().(commentsLoadedMsg); !ok || msg.key != "ABC-1" {
+		t.Errorf("got %T, want just the comments load", cmd())
+	}
+}
+
+// With no prefetch entry for the row, the debounce tick falls back to the
+// existing on-demand fetch for both halves of the pane.
+func TestSelectionChangedFallsBackToFetchOnAPrefetchMiss(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: time.Now()})
+	m = next.(Model)
+	// No m.prefetch entry for ABC-1.
+
+	m.selectionChanged()
+	if m.detailBodyDone {
+		t.Fatal("with no prefetch entry, the body must not be marked done yet")
+	}
+
+	_, cmd := m.Update(debounceMsg{seq: m.detailSeq, key: "ABC-1"})
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("got %T, want a batch of the two loads (the miss fallback)", cmd())
+	}
+}
+
 // The second visit to an issue should come from cache, not a fresh API call.
 func TestLoadIssueUsesTheCache(t *testing.T) {
 	cache := NewCache(t.TempDir())

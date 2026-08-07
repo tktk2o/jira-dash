@@ -262,3 +262,24 @@ func writeUsersOutput(w io.Writer, format outputFormat, users []jirapkg.User) er
 	}
 	return nil
 }
+
+// jqlSuggestOutput is `jira jql suggest`'s own shape - a new subcommand per
+// the migration plan, with no prior CLI output to stay byte-compatible
+// with.
+type jqlSuggestOutput struct {
+	Suggestions []jirapkg.Suggestion `json:"suggestions"`
+}
+
+func writeJQLSuggestOutput(w io.Writer, format outputFormat, suggestions []jirapkg.Suggestion) error {
+	if format == formatJSON {
+		return writeJSON(w, jqlSuggestOutput{Suggestions: suggestions})
+	}
+	if len(suggestions) == 0 {
+		_, _ = fmt.Fprintln(w, "No suggestions found")
+		return nil
+	}
+	for _, s := range suggestions {
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", s.Value, s.DisplayName)
+	}
+	return nil
+}

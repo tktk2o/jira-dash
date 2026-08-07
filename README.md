@@ -350,5 +350,37 @@ screen.
 - **Write-capable keybindings**: the dashboard itself only ever writes to Jira for
   issue creation. Everything else — comments, status, assignee, etc. — goes entirely
   through configured keybindings (shell commands)
+- **`defaults.refetchIntervalMinutes`**: minutes between automatic refetches of every
+  section (default `30`; `0` disables it). Even with auto-refetch disabled, a light
+  1-minute tick keeps relative times (`updated 3m ago`) fresh without touching the
+  network
+- **`defaults.sectionsShowCount`**: puts each section's row count on its tab (default
+  `true`)
+- **`defaults.confirmQuit`**: makes `q`/`ctrl+c` ask once ("press q again to quit")
+  before quitting instead of quitting immediately (default `false`)
+- **`defaults.columns`**: which of `key`, `type`, `status`, `points`, `assignee`,
+  `updated`, `summary` to show. The render order is always the fixed order above,
+  regardless of how the list is written, and `summary` is required. Hiding a column
+  hands its width to Summary. Omitted means every column — today's behaviour
+- **`defaults.preview.position`**: `right` | `bottom` | `auto` (default `right`).
+  `auto` picks `right` when the terminal is at least 80 columns wide (the same
+  threshold the preview's own auto-close already used), `bottom` otherwise
+- **`defaults.preview.heightLines`**: how many lines tall the preview pane is when
+  `position` puts it below the table (default `15`)
+- **Theme colors**: every `theme.colors.*` value accepts either a `#hex` color or a
+  terminal ANSI color index (`0`-`255`)
+- **Repo-scoped config**: a `./.jira-dash.yml` (or `.jira-dash.yaml`) in the current
+  directory is used in place of the default config path when neither `--config` nor
+  `JIRA_DASH_CONFIG` is set. Unlike gh-dash's own repo-scoped config, it **replaces**
+  the default config wholesale rather than merging with it — a partial file would
+  otherwise require guessing which keys it meant to override
+- **Preview prefetching**: after each section's own fetch lands, the first 25 rows'
+  descriptions are fetched in bulk in the background, so moving the cursor onto one
+  of them usually shows the preview instantly. On-demand fetch remains the fallback
+  for any row outside that window. An auto-refresh tick is skipped — with a footer
+  note saying so — whenever Jira's last response signalled `X-RateLimit-NearLimit`
+- **Building JQL**: `jira jql suggest <fieldName> [fieldValue]` lists a field's valid
+  values (autocomplete), useful when hand-writing a section's `jql`. `-f json` is
+  supported alongside the default table output
 
 See [docs/adr/](docs/adr/) for the reasoning behind each of these settings.

@@ -60,6 +60,69 @@ defaults:
 	}
 }
 
+// The refetch interval defaults to 30 minutes when the key is omitted, and
+// each of the three other observable states - a positive value, an explicit 0
+// disabling it, and sectionsShowCount's own default - needs its own assertion
+// because a plain int could not tell "omitted" from "explicitly 0" apart; that
+// is why the field is a pointer.
+func TestLoadConfigDefaultsRefetchIntervalAndShowCount(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser()
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.RefetchIntervalMinutes; got == nil || *got != 30 {
+		t.Errorf("refetchIntervalMinutes = %v, want the default 30", got)
+	}
+	if got := cfg.Defaults.SectionsShowCount; got == nil || !*got {
+		t.Error("sectionsShowCount should default to true")
+	}
+	if cfg.Defaults.ConfirmQuit {
+		t.Error("confirmQuit should default to false")
+	}
+}
+
+func TestLoadConfigKeepsExplicitRefetchIntervalZero(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser()
+defaults:
+  refetchIntervalMinutes: 0
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.RefetchIntervalMinutes; got == nil || *got != 0 {
+		t.Errorf("refetchIntervalMinutes = %v, want the explicit 0 to survive defaulting", got)
+	}
+}
+
+func TestLoadConfigKeepsExplicitSectionsShowCountFalse(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: My Issues
+    jql: assignee = currentUser()
+defaults:
+  sectionsShowCount: false
+`)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.SectionsShowCount; got == nil || *got {
+		t.Error("sectionsShowCount: false must survive defaulting")
+	}
+}
+
 func TestLoadConfigRejectsInvalidNumericAndEnumSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name, extra string
@@ -68,6 +131,7 @@ func TestLoadConfigRejectsInvalidNumericAndEnumSettings(t *testing.T) {
 		{"negative default limit", "defaults:\n  limit: -1\n"},
 		{"preview width outside ratio", "defaults:\n  preview:\n    width: 1.2\n"},
 		{"unsupported preview position", "defaults:\n  preview:\n    position: left\n"},
+		{"negative refetch interval", "defaults:\n  refetchIntervalMinutes: -1\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := "jiraSections:\n  - title: Mine\n    jql: project = ABC\n" + tc.extra
@@ -368,6 +432,200 @@ keybindings:
 `))
 	if err == nil || !strings.Contains(err.Error(), "no value") {
 		t.Fatalf("want a refusal for a value-less choice, got %v", err)
+	}
+}
+
+// Omitted defaults.columns means every column - today's behaviour must not
+// change for a config that never mentions the key.
+func TestLoadConfigDefaultsColumnsToEveryColumn(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Defaults.Columns) != len(columnNames) {
+		t.Fatalf("columns = %v, want every column %v", cfg.Defaults.Columns, columnNames)
+	}
+	for _, name := range columnNames {
+		if !cfg.Defaults.ColumnVisible(name) {
+			t.Errorf("%s should be visible by default", name)
+		}
+	}
+}
+
+// Hiding a column is the point of the key; it must not go through as "show
+// nothing but summary" or as "show everything anyway".
+func TestLoadConfigKeepsAnExplicitColumnList(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+defaults:
+  columns:
+    - key
+    - status
+    - summary
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"key", "status", "summary"} {
+		if !cfg.Defaults.ColumnVisible(name) {
+			t.Errorf("%s should be visible", name)
+		}
+	}
+	for _, name := range []string{"type", "points", "assignee", "updated"} {
+		if cfg.Defaults.ColumnVisible(name) {
+			t.Errorf("%s should be hidden", name)
+		}
+	}
+}
+
+// An unknown column name is a typo the person editing the config cannot see
+// any other way - the table simply draws without it.
+func TestLoadConfigRejectsAnUnknownColumn(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+defaults:
+  columns:
+    - key
+    - summary
+    - bogus
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("want a refusal naming the unknown column, got %v", err)
+	}
+}
+
+// A list without summary would draw a row of metadata with nothing to read it
+// by - the row would be meaningless.
+func TestLoadConfigRejectsColumnsWithoutSummary(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+defaults:
+  columns:
+    - key
+    - status
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "summary") {
+		t.Fatalf("want a refusal for a columns list without summary, got %v", err)
+	}
+}
+
+// "bottom" and "auto" are the two positions this feature adds; both must load.
+func TestLoadConfigAcceptsBottomAndAutoPreviewPositions(t *testing.T) {
+	for _, pos := range []string{"right", "bottom", "auto"} {
+		path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+defaults:
+  preview:
+    position: `+pos+`
+`)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Errorf("position %s should be accepted, got %v", pos, err)
+			continue
+		}
+		if cfg.Defaults.Preview.Position != pos {
+			t.Errorf("position = %q, want %q", cfg.Defaults.Preview.Position, pos)
+		}
+	}
+}
+
+// heightLines only matters for "bottom", but it is validated regardless of
+// position - the config could switch position later without editing this too.
+func TestLoadConfigDefaultsAndValidatesPreviewHeightLines(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Defaults.Preview.HeightLines; got != 15 {
+		t.Errorf("heightLines = %d, want the default 15", got)
+	}
+
+	_, err = LoadConfig(writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+defaults:
+  preview:
+    heightLines: -3
+`))
+	if err == nil {
+		t.Error("a negative heightLines should be rejected")
+	}
+}
+
+// A hex colour, an ANSI index written as a quoted string, and an ANSI index
+// written as a bare yaml int must all be accepted - lipgloss.Color takes all
+// three forms, and a hand-edited config uses whichever is natural to type.
+func TestLoadConfigAcceptsHexAndAnsiThemeColors(t *testing.T) {
+	for _, tc := range []struct {
+		name, yamlValue string
+	}{
+		{"hex", "\"#bd93f9\""},
+		{"ansi string", "\"141\""},
+		{"ansi int", "141"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+theme:
+  colors:
+    border:
+      primary: `+tc.yamlValue+`
+`)
+			if _, err := LoadConfig(path); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// Neither a nonsense string nor an out-of-range int is a colour lipgloss can
+// draw, and a config that names one should say so rather than draw a
+// dashboard with a silently wrong colour.
+func TestLoadConfigRejectsBadThemeColors(t *testing.T) {
+	for _, tc := range []struct {
+		name, yamlValue string
+	}{
+		{"nonsense string", "wat"},
+		{"out of range int", "300"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+theme:
+  colors:
+    border:
+      primary: `+tc.yamlValue+`
+`)
+			if _, err := LoadConfig(path); err == nil {
+				t.Errorf("theme colour %q should be rejected", tc.yamlValue)
+			}
+		})
 	}
 }
 

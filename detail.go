@@ -52,6 +52,14 @@ func (m *Model) selectionChanged() tea.Cmd {
 	m.detailBodyErr = ""
 	m.detailCommentsErr = ""
 	m.detailComments = nil
+	// A prefetch warmed by the section's own BulkIssues call (see
+	// prefetchDescriptions in model.go) serves the body immediately, and the
+	// debounced fetch below then skips it entirely - only a miss here still
+	// pays for the on-demand network round trip.
+	if body, ok := m.prefetch[issue.Key]; ok {
+		m.detailBody = body
+		m.detailBodyDone = true
+	}
 	// The header needs no call, so the pane is never blank while the two
 	// fetches are in flight.
 	m.refreshDetail(true)

@@ -12,6 +12,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// prefetchCount is how many rows of a freshly-landed section get their
+// description warmed in the one BulkIssues call that follows. It is capped
+// well under bulkFetchMaxKeys: a section's own Limit can be larger than this,
+// and the point is to warm what a user is likely to look at first, not to
+// turn every fetch into a second, bigger request.
+const prefetchCount = 25
+
+// prefetchCacheCap bounds Model.prefetch so a long session cannot grow it
+// without limit. Replacing the map wholesale per section reply (rather than
+// merging) would also bound it, but would throw away a still-valid entry from
+// section A the moment section B's own prefetch lands - capping the total
+// instead keeps every reply's entries around until the map is actually full.
+const prefetchCacheCap = 500
+
 // fetchConcurrency bounds how many section fetches run at once. The exec
 // startup that used to make parallelism essential is gone, but Jira is a
 // shared API on the other end of these calls, and a tab per core is enough -
@@ -20,6 +34,35 @@ const fetchConcurrency = 4
 
 // fetchTimeout stops a hung call from leaving a section spinning forever.
 const fetchTimeout = 15 * time.Second
+
+// uiTickInterval redraws the dashboard on a plain clock rather than only on
+// input or a fetch landing. Its one job is to keep the relative ages in the
+// Updated column and the preview header from freezing between keypresses -
+// bubbletea only repaints on a message, and without this one an idle terminal
+// otherwise sits on the frame from whenever something last happened. Used only
+// when defaults.refetchIntervalMinutes is 0: the auto-refetch tick already
+// forces exactly this redraw on its own schedule, so a second clock alongside
+// it would be pure waste.
+const uiTickInterval = time.Minute
+
+// confirmQuitPrompt is what the footer says while defaults.confirmQuit is
+// waiting on a second q/ctrl+c. Named so Update's set and its clear cannot say
+// two different strings.
+const confirmQuitPrompt = "press q again to quit"
+
+// tickMsg drives both auto-refetch (gh-dash's defaults.refetchIntervalMinutes)
+// and the plain redraw clock above; refetch tells Update which job this tick
+// is for. Only Init ever starts this loop, and the handler below is the only
+// place that reschedules it - unlike the spinner, which a keypress can restart
+// mid-flight, nothing else here can start a second copy, so there is no
+// pileup to tag a generation against.
+type tickMsg struct{ refetch bool }
+
+// tickCmd schedules one tick after d. Called both from Init to start the loop
+// and from the tickMsg case to keep it going.
+func tickCmd(d time.Duration, refetch bool) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{refetch: refetch} })
+}
 
 var fetchSem = make(chan struct{}, fetchConcurrency)
 
@@ -94,6 +137,15 @@ type debounceMsg struct {
 	key string
 }
 
+// prefetchLoadedMsg carries a BulkIssues reply for Model.prefetch. It has no
+// error field: a prefetch failure is silent by design (footer noise for a
+// background optimization would be wrong, and the per-issue on-demand fetch
+// still works as the fallback), so the tea.Cmd swallows the error itself and
+// this message simply carries whatever it did get - nil/empty on failure.
+type prefetchLoadedMsg struct {
+	descriptions map[string]string
+}
+
 // choicesLoadedMsg carries the reply from a choicesFrom: transitions/assignees
 // fetch. It carries both the issue the fetch was for and the keybinding it was
 // for, and the seq the request was issued under, because all three can go
@@ -139,6 +191,16 @@ type Model struct {
 	detailBodyDone    bool
 	detailBodyErr     string
 	detailCommentsErr string
+
+	// prefetch holds descriptions warmed by a BulkIssues call right after a
+	// section fetch lands. Keyed by issue key rather than by section: a
+	// description for ABC-1 is valid regardless of which section's fetch
+	// asked for it, so replies are merged in additively instead of being
+	// scoped to a fetchSeq - simpler, and correct, because the thing being
+	// cached (an issue's description) has no notion of which section it came
+	// from. Bounded by prefetchCacheCap so a long session cannot grow it
+	// without limit.
+	prefetch map[string]string
 
 	filtering   bool
 	filterDraft string
@@ -191,6 +253,13 @@ type Model struct {
 	showHelp bool
 	status   string
 
+	// pendingQuit backs defaults.confirmQuit: the first q/ctrl+c arms it and
+	// leaves a prompt in the footer instead of quitting; any other key disarms
+	// it again. Kept as a bool rather than folded into pendingG's flag because the
+	// two are unrelated motions that could otherwise be pressed in the same
+	// sequence (q after gg, say) and would then clear each other.
+	pendingQuit bool
+
 	// spinner animates while any section is in flight. Its tick loop is only
 	// kept alive while something is loading: an idle dashboard that wakes up
 	// several times a second to redraw the same frame is pure waste.
@@ -242,13 +311,27 @@ func NewModel(cfg *Config, s Searcher, c *Cache, now func() time.Time) Model {
 // Init fetches every section at once. The rows already seeded from cache are on
 // screen by then, so what these replace is visible rather than blank.
 func (m Model) Init() tea.Cmd {
-	// +1 for the spinner tick: every section starts out loading, so the
-	// animation has to be running from the first frame.
-	cmds := make([]tea.Cmd, 0, len(m.sections)+1)
+	// +2 for the spinner tick (every section starts out loading, so the
+	// animation has to be running from the first frame) and the clock tick that
+	// keeps ages live and, if configured, drives auto-refetch.
+	cmds := make([]tea.Cmd, 0, len(m.sections)+2)
 	for i, s := range m.sections {
 		cmds = append(cmds, fetchSection(m.searcher, i, s.fetchSeq, s.cfg))
 	}
-	return tea.Batch(append(cmds, m.spinner.Tick)...)
+	cmds = append(cmds, m.spinner.Tick, m.nextTick())
+	return tea.Batch(cmds...)
+}
+
+// nextTick schedules the one clock tick that is currently in flight: a
+// refetch tick on defaults.refetchIntervalMinutes when that is nonzero, or
+// else the lighter UI-only redraw tick. Read from cfg on every call rather
+// than cached on the model, so the mode can never drift from what LoadConfig
+// actually validated.
+func (m Model) nextTick() tea.Cmd {
+	if n := *m.cfg.Defaults.RefetchIntervalMinutes; n > 0 {
+		return tickCmd(time.Duration(n)*time.Minute, true)
+	}
+	return tickCmd(uiTickInterval, false)
 }
 
 func fetchSection(s Searcher, idx, seq int, sec Section) tea.Cmd {
@@ -264,31 +347,120 @@ func fetchSection(s Searcher, idx, seq int, sec Section) tea.Cmd {
 	}
 }
 
+// prefetchKeys is the first prefetchCount keys of a freshly-landed section -
+// what a user is likely to look at first, not every row the section holds.
+func prefetchKeys(issues []Issue) []string {
+	n := min(prefetchCount, len(issues))
+	keys := make([]string, 0, n)
+	for _, i := range issues[:n] {
+		keys = append(keys, i.Key)
+	}
+	return keys
+}
+
+// prefetchDescriptions warms Model.prefetch for keys in one BulkIssues call,
+// run as its own tea.Cmd so the UI is never blocked on it. A failure here is
+// swallowed rather than surfaced: this is a background optimization, and the
+// per-issue on-demand fetch in detail.go's loadIssue still covers a miss.
+func prefetchDescriptions(s Searcher, keys []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+
+		descriptions, err := s.BulkIssues(ctx, keys)
+		if err != nil {
+			return prefetchLoadedMsg{}
+		}
+		return prefetchLoadedMsg{descriptions: descriptions}
+	}
+}
+
+// mergePrefetch adds descriptions into m.prefetch, stopping once
+// prefetchCacheCap is reached - see that constant's doc comment for why
+// merging additively, bounded by a total cap, is the chosen tradeoff.
+func (m *Model) mergePrefetch(descriptions map[string]string) {
+	if len(descriptions) == 0 {
+		return
+	}
+	if m.prefetch == nil {
+		m.prefetch = make(map[string]string, len(descriptions))
+	}
+	for k, v := range descriptions {
+		if len(m.prefetch) >= prefetchCacheCap {
+			return
+		}
+		m.prefetch[k] = v
+	}
+}
+
 // resizeDetail sizes the preview viewport, which does not draw its own chrome
 // and starts 0x0 - without this the pane renders nothing at all. What is
-// subtracted horizontally is what View wraps it in: the rule dividing the panes,
-// the column of air after it, and the gap before it.
+// subtracted is what View wraps it in, and which dimension that is depends on
+// where the pane sits: beside the table it is width (the rule dividing the
+// panes, the column of air after it, and the gap before it); below it it is
+// height (one rule, see bottomPreviewChrome).
 //
-// Its height comes from tableHeight rather than its own arithmetic, because the
-// two sit side by side and the taller one decides how far down the screen the
-// footer lands. Computed separately they drifted, and opening the help pushed
-// two lines off the bottom of the terminal. Nothing is taken off vertically: the
-// divider is a left border only, so it adds no lines.
+// Its size comes from tableHeight/bottomPreviewHeight rather than its own
+// arithmetic, because the table and the pane share whatever chrome is above
+// and below them, and computed separately the two drifted - opening the help
+// once pushed two lines off the bottom of the terminal.
 //
 // Update owns calling this, by comparing chromeLines across a key. Asking each
 // transition to remember instead lost `/`, and the footer fell off the bottom of
 // the terminal - TestViewNeverDrawsMoreLinesThanTheTerminalHas covers every
 // prompt state so that class of miss fails there rather than on screen.
 func (m *Model) resizeDetail() {
+	if m.previewPosition() != "right" {
+		// Full table width, since the pane sits below rather than beside it, and
+		// only its own chrome line is taken off vertically.
+		m.detail.Width = max(0, m.tableWidth())
+		m.detail.Height = max(0, m.bottomPreviewHeight()-bottomPreviewChrome)
+		return
+	}
 	previewWidth := int(float64(m.width) * m.cfg.Defaults.Preview.Width)
 	m.detail.Width = max(0, previewWidth-previewChrome)
 	m.detail.Height = max(0, m.tableHeight())
 }
 
-// tableWidth is the pane the table gets: the whole terminal, less the preview
-// when one is showing.
+// previewPosition is where defaults.preview.position resolves to for this
+// terminal's width - see PreviewPosition for what "auto" decides between.
+func (m Model) previewPosition() string {
+	return PreviewPosition(m.cfg.Defaults.Preview.Position, m.width)
+}
+
+// previewShown answers whether the preview pane draws at all. A "right" pane
+// keeps the config-wins-when-closed, terminal-decides-otherwise rule it always
+// had; a "bottom" pane (explicit, or "auto" resolved to it) costs the table no
+// horizontal room to stay open, so it only depends on the toggle.
+func (m Model) previewShown() bool {
+	if m.previewPosition() == "right" {
+		return PreviewVisible(m.previewOpen, m.width, m.cfg.Defaults.Preview.Width)
+	}
+	return m.previewOpen
+}
+
+// minTableRows is the shortest the table is left with once a "bottom" preview
+// has taken its share of the terminal's height - defaults.preview.heightLines
+// is clamped against this so a value larger than the terminal cannot push
+// every row, and the footer with them, off the screen.
+const minTableRows = 5
+
+// bottomPreviewHeight is how many lines a "bottom" pane costs vertically,
+// chrome included, or 0 when the pane is not drawing there at all (closed, or
+// resolved to "right" instead).
+func (m Model) bottomPreviewHeight() int {
+	if m.previewPosition() == "right" || !m.previewShown() {
+		return 0
+	}
+	room := max(0, m.height-5-m.chromeLines()-minTableRows)
+	return bottomPreviewChrome + min(m.cfg.Defaults.Preview.HeightLines, room)
+}
+
+// tableWidth is the pane the table gets: the whole terminal, less a "right"
+// preview when one is showing. A "bottom" pane takes height, not width, so it
+// never shrinks this.
 func (m Model) tableWidth() int {
-	if !PreviewVisible(m.previewOpen, m.width, m.cfg.Defaults.Preview.Width) {
+	if !m.previewShown() || m.previewPosition() != "right" {
 		return m.width
 	}
 	return m.width - int(float64(m.width)*m.cfg.Defaults.Preview.Width)
@@ -305,12 +477,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case fetchedMsg:
 		m = m.applyFetched(msg)
+		var cmds []tea.Cmd
+		// A successful landing gets its descriptions warmed for whatever the
+		// user is likely to look at first, in the same batch regardless of
+		// whether this section is the one on screen right now.
+		if msg.err == nil {
+			if keys := prefetchKeys(msg.issues); len(keys) > 0 {
+				cmds = append(cmds, prefetchDescriptions(m.searcher, keys))
+			}
+		}
 		// Rows landing in the section you are looking at is a selection change:
 		// the cursor now points at an issue it did not point at before. Without
 		// this the preview stayed empty until the first keypress.
 		if msg.idx == m.active {
-			return m, m.selectionChanged()
+			cmds = append(cmds, m.selectionChanged())
 		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
+
+	case prefetchLoadedMsg:
+		m.mergePrefetch(msg.descriptions)
 		return m, nil
 
 	case issueLoadedMsg:
@@ -355,6 +543,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshDetail(false)
 		}
 		return m, nil
+
+	case tickMsg:
+		if !msg.refetch {
+			// A plain redraw clock: the tick itself is enough to unfreeze the ages
+			// (Update returning a new model repaints), there is nothing to fetch.
+			return m, m.nextTick()
+		}
+		// Refetch every section the way r refetches one, reusing fetchSection and
+		// nextFetch so the same fetchSeq staleness guard applies to a reply that
+		// lands after another refetch - manual or this tick's next lap - has
+		// already superseded it. Unlike r this does not blank the rows first: r's
+		// blank-while-loading is right for a refresh you asked for and are looking
+		// at, but a background tick firing every few minutes should not make the
+		// screen flash empty for issues that have not actually changed.
+		// A tick landing while the client is near Jira's rate limit skips the
+		// fetches this lap - spending the little headroom left on a background
+		// refresh nobody is waiting on is the wrong trade - but still
+		// reschedules itself: the ages should keep counting up, and the next
+		// lap gets to check again rather than the loop dying here.
+		if m.searcher.NearRateLimit() {
+			m.status = "rate limit near - refresh skipped"
+			return m, m.nextTick()
+		}
+		if m.status == "rate limit near - refresh skipped" {
+			m.status = ""
+		}
+		cmds := make([]tea.Cmd, 0, len(m.sections)+2)
+		for i := range m.sections {
+			m.sections[i].loading = true
+			cmds = append(cmds, fetchSection(m.searcher, i, m.nextFetch(i), m.sections[i].cfg))
+		}
+		return m, tea.Batch(append(cmds, m.spinner.Tick, m.nextTick())...)
 
 	case spinner.TickMsg:
 		// The loop ends by simply not scheduling the next tick. bubbles guards
@@ -417,6 +637,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A stale tick from a cursor position we have already left.
 		if msg.seq != m.detailSeq {
 			return m, nil
+		}
+		// selectionChanged already served the body from m.prefetch when it hit
+		// - see there - so the network fetch for it is skipped entirely here;
+		// only the comments still need a call.
+		if m.detailBodyDone && m.detailKey == msg.key {
+			return m, m.loadComments(msg.key)
 		}
 		return m, tea.Batch(m.loadIssue(msg.key), m.loadComments(msg.key))
 
@@ -535,8 +761,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingG = false
 	}
 
+	// Any key other than the second q/ctrl+c cancels a pending confirmQuit the
+	// same way any key other than a second g disarms pendingG above - except the
+	// quit case itself, which the switch below still needs to see armed.
+	if m.pendingQuit && msg.String() != "q" && msg.String() != "ctrl+c" {
+		m.pendingQuit = false
+		if m.status == confirmQuitPrompt {
+			m.status = ""
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
+		if m.cfg.Defaults.ConfirmQuit && !m.pendingQuit {
+			m.pendingQuit = true
+			m.status = confirmQuitPrompt
+			return m, nil
+		}
 		return m, tea.Quit
 	// h/l and the arrows are gh-dash's section keys; tab/shift+tab are kept
 	// because they are what the help line has always advertised.
