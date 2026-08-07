@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,25 @@ type Client struct {
 	// leaves it empty and builds the real host from creds.CloudID; a test
 	// points it at an httptest.Server instead of adding a second constructor.
 	baseURL string
+
+	// nearRateLimit is the most recent response's X-RateLimit-NearLimit
+	// observation. Jira sends this header on every successful response, not
+	// just 429s, as an early-warning signal before throttling actually
+	// kicks in. A plain bool would race under the Client-is-shared-across-
+	// goroutines contract above, so this is an atomic.Bool; "latest
+	// observation wins" is simple and good enough for a pressure signal
+	// that is inherently a snapshot, not a running total.
+	nearRateLimit atomic.Bool
+}
+
+// NearRateLimit reports whether the most recent response this Client
+// received carried X-RateLimit-NearLimit: true - Jira's own warning that
+// this token is close to being throttled. Callers can use it to back off
+// voluntarily (e.g. widen a polling interval) before a 429 forces the
+// issue. It reflects only the latest response; a Client freshly built, or
+// one whose most recent call did not include the header, reports false.
+func (c *Client) NearRateLimit() bool {
+	return c.nearRateLimit.Load()
 }
 
 // NewClient builds a Client authenticated as creds. It performs no network
@@ -164,6 +184,12 @@ func (c *Client) doAt(ctx context.Context, root, method, path string, body, out 
 			lastErr = retryableStatusError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")), body: respBody}
 			continue
 		}
+
+		// "latest observation wins" - recorded on every successful
+		// response, whether or not the header was present, so a client
+		// that stops seeing the header (rate pressure eased) also stops
+		// reporting NearRateLimit.
+		c.nearRateLimit.Store(resp.Header.Get("X-RateLimit-NearLimit") == "true")
 
 		if out == nil || len(respBody) == 0 {
 			return nil
