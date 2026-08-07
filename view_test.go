@@ -356,6 +356,77 @@ func TestViewDropsPreviewOnNarrowTerminal(t *testing.T) {
 	}
 }
 
+// "auto" flips at the same boundary a plain "right" pane already used to
+// decide whether it fit: at minTableWidth it is "right", just below it is
+// "bottom" instead of closing outright.
+func TestPreviewPositionAutoFlipsAtTheWidthBoundary(t *testing.T) {
+	if got := PreviewPosition("auto", minTableWidth); got != "right" {
+		t.Errorf("auto at %d = %q, want right", minTableWidth, got)
+	}
+	if got := PreviewPosition("auto", minTableWidth-1); got != "bottom" {
+		t.Errorf("auto at %d = %q, want bottom", minTableWidth-1, got)
+	}
+	// Explicit positions pass through untouched at any width.
+	if got := PreviewPosition("right", 10); got != "right" {
+		t.Errorf("right at 10 = %q, want right unchanged", got)
+	}
+	if got := PreviewPosition("bottom", 500); got != "bottom" {
+		t.Errorf("bottom at 500 = %q, want bottom unchanged", got)
+	}
+}
+
+// A plain "right" position must keep closing under minTableWidth exactly as
+// it always did - auto is what replaced closing with moving, not right.
+func TestPreviewPositionRightStillClosesUnderMinWidth(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.width = minTableWidth - 1
+	m.cfg.Defaults.Preview.Position = "right"
+
+	if m.previewShown() {
+		t.Error("a plain right position narrower than minTableWidth should stay closed, unchanged behaviour")
+	}
+}
+
+// A "bottom" pane draws below the table, full width, with a rule between them
+// - never beside it, regardless of how wide the terminal is.
+func TestBottomPreviewRendersBelowTheTableFullWidth(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.cfg.Defaults.Preview.Position = "bottom"
+	next, _ := m.Update(fetchedMsg{idx: 0, issues: issues("ABC-1"), at: fixedNow()()})
+	m = settled(next.(Model))
+
+	if pos := m.previewPosition(); pos != "bottom" {
+		t.Fatalf("previewPosition = %q, want bottom", pos)
+	}
+	if !m.previewShown() {
+		t.Fatal("the preview should be open by default")
+	}
+	out := plain(m.View())
+	lines := strings.Split(out, "\n")
+	tableLine, ruleLine, paneLine := -1, -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.Contains(l, "ABC-1") && tableLine == -1:
+			tableLine = i
+		case strings.Contains(l, "────") && ruleLine == -1 && tableLine != -1:
+			ruleLine = i
+		case strings.Contains(l, "ABC-1") && i > ruleLine && ruleLine != -1 && paneLine == -1:
+			paneLine = i
+		}
+	}
+	if tableLine == -1 {
+		t.Fatalf("the table row should be somewhere in the output:\n%s", out)
+	}
+	if ruleLine == -1 || ruleLine <= tableLine {
+		t.Fatalf("a rule should divide the table from the pane below it:\n%s", out)
+	}
+	// The rule spans the full table width, not a half-width column - a "bottom"
+	// pane never shares the row with the table the way a "right" one does.
+	if got := runewidth.StringWidth(strings.TrimSpace(lines[ruleLine])); got != m.tableWidth() {
+		t.Errorf("bottom rule width = %d, want the full table width %d", got, m.tableWidth())
+	}
+}
+
 // The project and sprint are inherited, not typed, so the box has to say where
 // the issue will land before it is submitted.
 func TestCreateBoxNamesItsTarget(t *testing.T) {
@@ -509,7 +580,7 @@ func TestQueryLineIsOneUnframedLine(t *testing.T) {
 // The header names the columns the row lays out, so it has to use the same
 // widths - otherwise it is worse than nothing.
 func TestColumnHeaderAlignsWithTheRow(t *testing.T) {
-	header := renderColumnHeader(120)
+	header := renderColumnHeader(allColumns, 120)
 	if got := runewidth.StringWidth(header); got > 120 {
 		t.Errorf("header is %d cells, want at most 120", got)
 	}
@@ -517,6 +588,52 @@ func TestColumnHeaderAlignsWithTheRow(t *testing.T) {
 		if !strings.Contains(header, want) {
 			t.Errorf("header should name the %s column: %q", want, header)
 		}
+	}
+}
+
+// The default column list shows every column: hiding none must render exactly
+// what the pre-Feature-4 header and row always did.
+func TestVisibleColumnsDefaultsToEveryColumn(t *testing.T) {
+	cfg := Defaults{Columns: append([]string{}, columnNames...)}
+	cols := visibleColumns(cfg)
+	if len(cols) != len(allColumns) {
+		t.Fatalf("visible columns = %d, want every fixed column %d", len(cols), len(allColumns))
+	}
+}
+
+// Hiding points and assignee has to disappear from both the header and every
+// row, and the width it freed has to go to summary - otherwise the two
+// columns and the summary would draw on top of each other.
+func TestHidingColumnsWidensSummaryInHeaderAndRows(t *testing.T) {
+	cfg := Defaults{Columns: []string{"key", "type", "status", "updated", "summary"}}
+	cols := visibleColumns(cfg)
+
+	header := renderColumnHeader(cols, 120)
+	for _, want := range []string{"KEY", "STATUS", "SUMMARY"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header should still name %s: %q", want, header)
+		}
+	}
+	for _, gone := range []string{"SP", "ASSIGNEE"} {
+		if strings.Contains(header, gone) {
+			t.Errorf("header should not name the hidden %s column: %q", gone, header)
+		}
+	}
+
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	issue := Issue{Key: "ABC-1", Type: "Bug", Status: "Open", Summary: "hello", StoryPoints: fptr(5)}
+	issue.Assignee = ptr("Jane Doe")
+	row := plain(renderRow(issue, cols, 100, now, newRowStyles(Theme{}, false)))
+	if runewidth.StringWidth(row) != 100 {
+		t.Errorf("row is %d cells, want the full 100 - the freed width should go to summary",
+			runewidth.StringWidth(row))
+	}
+	// fixedWidth with points and assignee hidden is narrower than with them
+	// shown, so the row's fixed portion (everything before the summary text)
+	// must be shorter than the all-columns case for the same issue.
+	if fixedWidth(cols) >= fixedWidth(allColumns) {
+		t.Errorf("hiding columns should shrink the fixed width: got %d, all-columns is %d",
+			fixedWidth(cols), fixedWidth(allColumns))
 	}
 }
 
@@ -772,7 +889,7 @@ func TestSelectedRowCarriesTheFillInEverySegment(t *testing.T) {
 // the text alone - a styled string counts its escape sequences as cells - and
 // every assertion here is about layout, not colour.
 func plainRow(i Issue, width int, now time.Time) string {
-	return plain(renderRow(i, width, now, newRowStyles(Theme{}, false)))
+	return plain(renderRow(i, allColumns, width, now, newRowStyles(Theme{}, false)))
 }
 
 // The help said "create keys come from the config" while four configured keys

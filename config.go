@@ -7,7 +7,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"regexp"
 	"slices"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,6 +18,10 @@ const (
 	defaultLimit           = 20
 	defaultPreviewWidth    = 0.5
 	defaultPreviewPosition = "right"
+	// defaultPreviewHeightLines is gh-dash's own default height for a pane
+	// stacked below the table: enough for a header and a few lines of body
+	// without eating most of a typical 40-line terminal's rows.
+	defaultPreviewHeightLines = 15
 	// defaultRefetchIntervalMinutes matches gh-dash's own default. An explicit 0
 	// means "never" rather than "use the default" - see RefetchIntervalMinutes -
 	// so this only applies when the key is omitted entirely.
@@ -82,15 +88,45 @@ type Defaults struct {
 	// bool is enough here - the default (false) is also the zero value, so there
 	// is nothing an omitted key needs to be told apart from.
 	ConfirmQuit bool `yaml:"confirmQuit"`
+
+	// Columns is which of the built-in columns to show. It only says which -
+	// never in what order: the table always draws them in columnNames' order,
+	// so a config cannot make the summary jump left of the key. Omitted means
+	// every column, today's behaviour. Hiding one hands its width to Summary,
+	// the one column worth the room.
+	Columns []string `yaml:"columns"`
 }
 
-// Preview is the pane beside the table. Open is a pointer so that an omitted key
-// and an explicit `open: false` are distinguishable: the default is open, and a
-// plain bool cannot express that.
+// columnNames is every built-in column, in the fixed order the table always
+// renders them: defaults.columns chooses which of these show, not where.
+var columnNames = []string{"key", "type", "status", "points", "assignee", "updated", "summary"}
+
+// previewPositions is every accepted defaults.preview.position value. "right"
+// is the only one gh-dash parity used to support; "bottom" stacks the pane
+// under the table instead of beside it, and "auto" is "right" when the
+// terminal is wide enough for right to have been the choice anyway, else
+// "bottom" - see PreviewPosition in format.go.
+var previewPositions = []string{"right", "bottom", "auto"}
+
+// Preview is the pane beside (or below) the table. Open is a pointer so that an
+// omitted key and an explicit `open: false` are distinguishable: the default is
+// open, and a plain bool cannot express that.
 type Preview struct {
 	Open     *bool   `yaml:"open"`
 	Position string  `yaml:"position"`
 	Width    float64 `yaml:"width"`
+	// HeightLines is how tall the pane is when Position is "bottom" - Width is a
+	// table/pane split and has nothing to say about a pane stacked beneath the
+	// table instead of beside it.
+	HeightLines int `yaml:"heightLines"`
+}
+
+// ColumnVisible answers whether name is one of the columns defaults.columns
+// asked for. Called at render time rather than precomputed into a set: the
+// list is at most seven names, and a set would be one more thing LoadConfig
+// has to keep in sync with the yaml it decoded.
+func (d Defaults) ColumnVisible(name string) bool {
+	return slices.Contains(d.Columns, name)
 }
 
 // Keybindings groups the configured keys by what they act on. Only issue keys
@@ -193,6 +229,26 @@ type Colors struct {
 	} `yaml:"border"`
 }
 
+// hexColor matches a #rgb or #rrggbb colour, the two forms lipgloss.Color
+// itself accepts.
+var hexColor = regexp.MustCompile(`^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+
+// validThemeColor accepts what lipgloss.Color accepts and this dashboard is
+// prepared to load: a #hex colour, or a terminal ANSI colour index (0-255)
+// written as either a YAML string or a bare int - LoadConfig decodes both into
+// the same Go string, see the KnownFields decoder above. An empty value is
+// fine; it means "use the built-in default" everywhere this is called.
+func validThemeColor(v string) error {
+	if v == "" || hexColor.MatchString(v) {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n > 255 {
+		return fmt.Errorf("%q is not a #hex colour or an ANSI index 0-255", v)
+	}
+	return nil
+}
+
 // LoadConfig reads the YAML at path and fills in defaults. A section that
 // cannot run is a hard error rather than a silently dropped tab: an empty tab
 // reads as "nothing matches", which is a worse lie than refusing to start.
@@ -235,14 +291,47 @@ func LoadConfig(path string) (*Config, error) {
 	if c.Defaults.Preview.Position == "" {
 		c.Defaults.Preview.Position = defaultPreviewPosition
 	}
-	if c.Defaults.Preview.Position != defaultPreviewPosition {
-		return nil, fmt.Errorf("%s: defaults.preview.position must be %q", path, defaultPreviewPosition)
+	if !slices.Contains(previewPositions, c.Defaults.Preview.Position) {
+		return nil, fmt.Errorf("%s: defaults.preview.position must be one of %q", path, previewPositions)
 	}
 	if c.Defaults.Preview.Width == 0 {
 		c.Defaults.Preview.Width = defaultPreviewWidth
 	}
 	if c.Defaults.Preview.Width <= 0 || c.Defaults.Preview.Width >= 1 {
 		return nil, fmt.Errorf("%s: defaults.preview.width must be greater than 0 and less than 1", path)
+	}
+	if c.Defaults.Preview.HeightLines == 0 {
+		c.Defaults.Preview.HeightLines = defaultPreviewHeightLines
+	}
+	if c.Defaults.Preview.HeightLines <= 0 {
+		return nil, fmt.Errorf("%s: defaults.preview.heightLines must be positive", path)
+	}
+
+	if len(c.Defaults.Columns) == 0 {
+		c.Defaults.Columns = slices.Clone(columnNames)
+	} else {
+		for _, name := range c.Defaults.Columns {
+			if !slices.Contains(columnNames, name) {
+				return nil, fmt.Errorf("%s: defaults.columns has unknown column %q (want one of %q)",
+					path, name, columnNames)
+			}
+		}
+		// Without summary the row carries every column but the one the row was
+		// built to show - the table would draw fixed columns beside a blank space.
+		if !slices.Contains(c.Defaults.Columns, "summary") {
+			return nil, fmt.Errorf("%s: defaults.columns must include summary", path)
+		}
+	}
+
+	for _, tc := range []struct{ name, value string }{
+		{"text.primary", c.Theme.Colors.Text.Primary},
+		{"text.secondary", c.Theme.Colors.Text.Secondary},
+		{"background.selected", c.Theme.Colors.Background.Selected},
+		{"border.primary", c.Theme.Colors.Border.Primary},
+	} {
+		if err := validThemeColor(tc.value); err != nil {
+			return nil, fmt.Errorf("%s: theme.colors.%s: %w", path, tc.name, err)
+		}
 	}
 
 	if c.Defaults.RefetchIntervalMinutes == nil {

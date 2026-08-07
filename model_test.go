@@ -93,9 +93,13 @@ func testConfig() *Config {
 		},
 		Defaults: Defaults{
 			Limit:                  20,
-			Preview:                Preview{Open: &open, Position: "right", Width: 0.5},
+			Preview:                Preview{Open: &open, Position: "right", Width: 0.5, HeightLines: 15},
 			RefetchIntervalMinutes: &refetch,
 			SectionsShowCount:      &showCount,
+			// Every column, the same default LoadConfig fills in for an omitted
+			// defaults.columns key - tests here build a Config by hand, bypassing
+			// that default, so it has to be named explicitly.
+			Columns: append([]string{}, columnNames...),
 		},
 	}
 }
