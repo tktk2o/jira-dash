@@ -384,3 +384,12 @@ screen.
   supported alongside the default table output
 
 See [docs/adr/](docs/adr/) for the reasoning behind each of these settings.
+
+## License
+
+No license is granted. This repository is published for reference only — reading
+and forking are permitted by GitHub's Terms of Service, but no other rights are
+granted.
+
+Contributions are not accepted: issues are disabled and pull requests will be
+closed without review.
