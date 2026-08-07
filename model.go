@@ -12,6 +12,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// prefetchCount is how many rows of a freshly-landed section get their
+// description warmed in the one BulkIssues call that follows. It is capped
+// well under bulkFetchMaxKeys: a section's own Limit can be larger than this,
+// and the point is to warm what a user is likely to look at first, not to
+// turn every fetch into a second, bigger request.
+const prefetchCount = 25
+
+// prefetchCacheCap bounds Model.prefetch so a long session cannot grow it
+// without limit. Replacing the map wholesale per section reply (rather than
+// merging) would also bound it, but would throw away a still-valid entry from
+// section A the moment section B's own prefetch lands - capping the total
+// instead keeps every reply's entries around until the map is actually full.
+const prefetchCacheCap = 500
+
 // fetchConcurrency bounds how many section fetches run at once. The exec
 // startup that used to make parallelism essential is gone, but Jira is a
 // shared API on the other end of these calls, and a tab per core is enough -
@@ -123,6 +137,15 @@ type debounceMsg struct {
 	key string
 }
 
+// prefetchLoadedMsg carries a BulkIssues reply for Model.prefetch. It has no
+// error field: a prefetch failure is silent by design (footer noise for a
+// background optimization would be wrong, and the per-issue on-demand fetch
+// still works as the fallback), so the tea.Cmd swallows the error itself and
+// this message simply carries whatever it did get - nil/empty on failure.
+type prefetchLoadedMsg struct {
+	descriptions map[string]string
+}
+
 // choicesLoadedMsg carries the reply from a choicesFrom: transitions/assignees
 // fetch. It carries both the issue the fetch was for and the keybinding it was
 // for, and the seq the request was issued under, because all three can go
@@ -168,6 +191,16 @@ type Model struct {
 	detailBodyDone    bool
 	detailBodyErr     string
 	detailCommentsErr string
+
+	// prefetch holds descriptions warmed by a BulkIssues call right after a
+	// section fetch lands. Keyed by issue key rather than by section: a
+	// description for ABC-1 is valid regardless of which section's fetch
+	// asked for it, so replies are merged in additively instead of being
+	// scoped to a fetchSeq - simpler, and correct, because the thing being
+	// cached (an issue's description) has no notion of which section it came
+	// from. Bounded by prefetchCacheCap so a long session cannot grow it
+	// without limit.
+	prefetch map[string]string
 
 	filtering   bool
 	filterDraft string
@@ -314,6 +347,52 @@ func fetchSection(s Searcher, idx, seq int, sec Section) tea.Cmd {
 	}
 }
 
+// prefetchKeys is the first prefetchCount keys of a freshly-landed section -
+// what a user is likely to look at first, not every row the section holds.
+func prefetchKeys(issues []Issue) []string {
+	n := min(prefetchCount, len(issues))
+	keys := make([]string, 0, n)
+	for _, i := range issues[:n] {
+		keys = append(keys, i.Key)
+	}
+	return keys
+}
+
+// prefetchDescriptions warms Model.prefetch for keys in one BulkIssues call,
+// run as its own tea.Cmd so the UI is never blocked on it. A failure here is
+// swallowed rather than surfaced: this is a background optimization, and the
+// per-issue on-demand fetch in detail.go's loadIssue still covers a miss.
+func prefetchDescriptions(s Searcher, keys []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		defer cancel()
+
+		descriptions, err := s.BulkIssues(ctx, keys)
+		if err != nil {
+			return prefetchLoadedMsg{}
+		}
+		return prefetchLoadedMsg{descriptions: descriptions}
+	}
+}
+
+// mergePrefetch adds descriptions into m.prefetch, stopping once
+// prefetchCacheCap is reached - see that constant's doc comment for why
+// merging additively, bounded by a total cap, is the chosen tradeoff.
+func (m *Model) mergePrefetch(descriptions map[string]string) {
+	if len(descriptions) == 0 {
+		return
+	}
+	if m.prefetch == nil {
+		m.prefetch = make(map[string]string, len(descriptions))
+	}
+	for k, v := range descriptions {
+		if len(m.prefetch) >= prefetchCacheCap {
+			return
+		}
+		m.prefetch[k] = v
+	}
+}
+
 // resizeDetail sizes the preview viewport, which does not draw its own chrome
 // and starts 0x0 - without this the pane renders nothing at all. What is
 // subtracted is what View wraps it in, and which dimension that is depends on
@@ -398,12 +477,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case fetchedMsg:
 		m = m.applyFetched(msg)
+		var cmds []tea.Cmd
+		// A successful landing gets its descriptions warmed for whatever the
+		// user is likely to look at first, in the same batch regardless of
+		// whether this section is the one on screen right now.
+		if msg.err == nil {
+			if keys := prefetchKeys(msg.issues); len(keys) > 0 {
+				cmds = append(cmds, prefetchDescriptions(m.searcher, keys))
+			}
+		}
 		// Rows landing in the section you are looking at is a selection change:
 		// the cursor now points at an issue it did not point at before. Without
 		// this the preview stayed empty until the first keypress.
 		if msg.idx == m.active {
-			return m, m.selectionChanged()
+			cmds = append(cmds, m.selectionChanged())
 		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
+
+	case prefetchLoadedMsg:
+		m.mergePrefetch(msg.descriptions)
 		return m, nil
 
 	case issueLoadedMsg:
@@ -462,6 +557,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// blank-while-loading is right for a refresh you asked for and are looking
 		// at, but a background tick firing every few minutes should not make the
 		// screen flash empty for issues that have not actually changed.
+		// A tick landing while the client is near Jira's rate limit skips the
+		// fetches this lap - spending the little headroom left on a background
+		// refresh nobody is waiting on is the wrong trade - but still
+		// reschedules itself: the ages should keep counting up, and the next
+		// lap gets to check again rather than the loop dying here.
+		if m.searcher.NearRateLimit() {
+			m.status = "rate limit near - refresh skipped"
+			return m, m.nextTick()
+		}
+		if m.status == "rate limit near - refresh skipped" {
+			m.status = ""
+		}
 		cmds := make([]tea.Cmd, 0, len(m.sections)+2)
 		for i := range m.sections {
 			m.sections[i].loading = true
@@ -530,6 +637,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A stale tick from a cursor position we have already left.
 		if msg.seq != m.detailSeq {
 			return m, nil
+		}
+		// selectionChanged already served the body from m.prefetch when it hit
+		// - see there - so the network fetch for it is skipped entirely here;
+		// only the comments still need a call.
+		if m.detailBodyDone && m.detailKey == msg.key {
+			return m, m.loadComments(msg.key)
 		}
 		return m, tea.Batch(m.loadIssue(msg.key), m.loadComments(msg.key))
 

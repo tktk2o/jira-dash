@@ -37,6 +37,15 @@ type Searcher interface {
 	Create(ctx context.Context, req NewIssueRequest) (Issue, error)
 	Transitions(ctx context.Context, key string) ([]Transition, error)
 	AssignableUsers(ctx context.Context, issueKey, query string) ([]User, error)
+	// BulkIssues prefetches descriptions for many issues in one round trip -
+	// the model uses it right after a section fetch lands, so opening the
+	// preview on one of those rows usually needs no further call at all.
+	BulkIssues(ctx context.Context, keys []string) (map[string]string, error)
+	// NearRateLimit reports whether the last response this Searcher made was
+	// close enough to Jira's rate limit that the auto-refetch tick should
+	// skip this lap rather than spend a call on a background refresh nobody
+	// is waiting on.
+	NearRateLimit() bool
 }
 
 // NewIssueRequest is everything the create prompt collects. Project and sprint
@@ -109,4 +118,15 @@ func (a Adapter) Transitions(ctx context.Context, key string) ([]Transition, err
 // interface anyway so Adapter matches Client's own shape exactly.
 func (a Adapter) AssignableUsers(ctx context.Context, issueKey, query string) ([]User, error) {
 	return a.Client.AssignableUsers(ctx, issueKey, query)
+}
+
+// BulkIssues prefetches many descriptions in one round trip.
+func (a Adapter) BulkIssues(ctx context.Context, keys []string) (map[string]string, error) {
+	return a.Client.BulkIssues(ctx, keys)
+}
+
+// NearRateLimit reports whether the client's most recent response was close
+// to Jira's rate limit.
+func (a Adapter) NearRateLimit() bool {
+	return a.Client.NearRateLimit()
 }
