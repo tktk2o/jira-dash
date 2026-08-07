@@ -40,6 +40,19 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # デフォルトの linter セットのみ。カスタムルールを積むと直近の commit
+      # では通っても将来のコードが引っかかった時に何を直すべきか分からなくなる。
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      # 依存の既知脆弱性チェック。go.sum の内容ではなく実際に呼んでいる
+      # パッケージ/関数まで見て絞り込むので誤検知が少ない。
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       # テストは認証情報を要らない前提で書かれている（API は httptest で立てる）。
       # HOME を空にして走らせるのはその前提を守るためで、うっかり
       # ~/.config/jira-dash の実物を読むテストが混ざったらここで落ちる。
