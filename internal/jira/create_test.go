@@ -178,6 +178,100 @@ func TestActiveSprintNeverReturnsAClosedSprint(t *testing.T) {
 	}
 }
 
+// ActiveSprint must not stop at the first page of GET /board: a site with
+// enough boards to need a second page must still have that second board's
+// active sprint found, not silently ignored because isLast was false on
+// page one.
+func TestActiveSprintPaginatesAcrossMultipleBoardPages(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, r *http.Request) {
+		startAt := r.URL.Query().Get("startAt")
+		switch startAt {
+		case "0":
+			_, _ = w.Write([]byte(`{"values":[{"id":1}],"isLast":false}`))
+		case "50":
+			_, _ = w.Write([]byte(`{"values":[{"id":2}],"isLast":true}`))
+		default:
+			t.Errorf("unexpected startAt %q", startAt)
+			_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
+		}
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/1/sprint", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/2/sprint", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"id":99,"name":"Team 0803-0807","state":"active"}],"isLast":true}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	got, err := c.ActiveSprint(context.Background(), "PROJ", "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != 99 {
+		t.Errorf("got = %+v, want the active sprint on the second board page (id 99)", got)
+	}
+}
+
+// The same pagination must hold for GET /board/{id}/sprint: a board whose
+// active sprint sits on a second sprints page must still be found.
+func TestActiveSprintPaginatesAcrossMultipleSprintPages(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"id":7}],"isLast":true}`))
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/7/sprint", func(w http.ResponseWriter, r *http.Request) {
+		startAt := r.URL.Query().Get("startAt")
+		switch startAt {
+		case "0":
+			_, _ = w.Write([]byte(`{"values":[{"id":1,"name":"Other 0713-0717","state":"future"}],"isLast":false}`))
+		case "50":
+			_, _ = w.Write([]byte(`{"values":[{"id":3,"name":"Team 0803-0807","state":"active"}],"isLast":true}`))
+		default:
+			t.Errorf("unexpected startAt %q", startAt)
+			_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	got, err := c.ActiveSprint(context.Background(), "PROJ", "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != 3 || got.State != "active" {
+		t.Errorf("got = %+v, want the active sprint on the second sprint page (id 3)", got)
+	}
+}
+
+// A page that never sets isLast=true must not spin forever - the safety cap
+// exists exactly for a misbehaving site like this one.
+func TestActiveSprintStopsAtTheMaxPageCapWhenIsLastNeverArrives(t *testing.T) {
+	hits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"values":[{"id":1}],"isLast":false}`))
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/1/sprint", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[],"isLast":true}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, err := c.ActiveSprint(context.Background(), "PROJ", "Team")
+	if err == nil {
+		t.Fatal("want an error, no active/future sprint was ever returned")
+	}
+	if hits != maxActiveSprintPages {
+		t.Errorf("board endpoint was hit %d times, want the cap of %d", hits, maxActiveSprintPages)
+	}
+}
+
 // A project with no board is a project ActiveSprint cannot resolve anything
 // for; the error must name the project rather than surface an empty result
 // that looks like "found nothing to do", not "cannot do this".
