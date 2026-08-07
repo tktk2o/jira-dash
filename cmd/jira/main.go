@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // version is the string `jira --version`/`jira -v` prints. It has no git
@@ -51,7 +52,12 @@ func run(args []string, stdout, stderr io.Writer, newClient func() (jiraClient, 
 		return 1
 	}
 
-	ctx := context.Background()
+	// A bare Background() context has no deadline, so a hung Jira request
+	// would hang this process forever too; bound the whole CLI invocation
+	// instead, generously enough for jira-dash's slowest command (a paged
+	// search) plus the client's own retries.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	cmd, rest := args[0], args[1:]
 
 	// --version/-v must work with no credentials configured, same as auth
