@@ -48,7 +48,7 @@ var usageLines = []string{
 // migration plan's own ban on tests touching either.
 func run(args []string, stdout, stderr io.Writer, newClient func() (jiraClient, error)) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, strings.Join(usageLines, "\n"))
+		_, _ = fmt.Fprintln(stderr, strings.Join(usageLines, "\n"))
 		return 1
 	}
 
@@ -64,7 +64,7 @@ func run(args []string, stdout, stderr io.Writer, newClient func() (jiraClient, 
 	// below: asking a freshly installed machine for the version should
 	// never fail on a missing credentials file.
 	if cmd == "--version" || cmd == "-v" {
-		fmt.Fprintln(stdout, version)
+		_, _ = fmt.Fprintln(stdout, version)
 		return 0
 	}
 
@@ -73,7 +73,7 @@ func run(args []string, stdout, stderr io.Writer, newClient func() (jiraClient, 
 	// client" below.
 	if cmd == "auth" {
 		if err := runAuth(rest, os.Stdin, stdout); err != nil {
-			fmt.Fprintln(stderr, err)
+			_, _ = fmt.Fprintln(stderr, err)
 			return 1
 		}
 		return 0
@@ -81,17 +81,17 @@ func run(args []string, stdout, stderr io.Writer, newClient func() (jiraClient, 
 
 	dispatch, ok := subcommands[cmd]
 	if !ok {
-		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
+		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", cmd)
 		return 1
 	}
 
 	client, err := newClient()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if err := dispatch(ctx, client, rest, stdout); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0

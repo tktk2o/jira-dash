@@ -79,12 +79,11 @@ func TestSubcommandsAcceptFlagsBeforeOrAfterThePositional(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			flagsFirst := append(append([]string{}, tc.beforeArgs...), tc.key)
-			positionalFirst := append(append([]string{}, tc.beforeArgs...), tc.key)
 			// Move the key to the front: beforeArgs may itself start with a
 			// subcommand word ("add"/"list"/"assignable") that must stay
 			// first, so the key is inserted right after that word rather
 			// than at index 0.
-			positionalFirst = reorderKeyFirst(tc.beforeArgs, tc.key)
+			positionalFirst := reorderKeyFirst(tc.beforeArgs, tc.key)
 
 			for _, variant := range []struct {
 				label string

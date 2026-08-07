@@ -67,7 +67,7 @@ func TestLoginRefusesToSaveWhenMyselfRejects(t *testing.T) {
 		if err != nil {
 			return jirapkg.User{}, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			return jirapkg.User{}, errors.New("jira rejected the credentials (HTTP 401)")
 		}

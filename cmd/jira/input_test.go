@@ -37,7 +37,7 @@ func TestReadFileOrStdinReadsStdinWhenPathIsDash(t *testing.T) {
 
 	go func() {
 		_, _ = w.Write([]byte("piped body"))
-		w.Close()
+		_ = w.Close()
 	}()
 
 	got, err := readFileOrStdin("-")

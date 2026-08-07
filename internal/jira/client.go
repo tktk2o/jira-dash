@@ -151,7 +151,7 @@ func (c *Client) doAt(ctx context.Context, root, method, path string, body, out 
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("reading response for %s %s: %w", method, path, err)
 			continue

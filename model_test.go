@@ -949,7 +949,7 @@ func TestFuzzyRankSortsEarlierTighterMatchesFirst(t *testing.T) {
 	if !ok {
 		t.Fatal("Cab should match \"ab\"")
 	}
-	if !(rankAbacus < rankCab) {
+	if rankAbacus >= rankCab {
 		t.Errorf("rank(Abacus)=%d should be less than rank(Cab)=%d", rankAbacus, rankCab)
 	}
 
