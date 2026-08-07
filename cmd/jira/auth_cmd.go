@@ -119,13 +119,13 @@ func runAuthLogin(stdin io.Reader, stdout io.Writer, verify verifyFunc, save sav
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Logged in as %s. Credentials written to %s.\n", user.DisplayName, path)
+	_, _ = fmt.Fprintf(stdout, "Logged in as %s. Credentials written to %s.\n", user.DisplayName, path)
 	return nil
 }
 
 // promptLine writes prompt and reads one line of visible input.
 func promptLine(r *bufio.Reader, stdout io.Writer, prompt string) (string, error) {
-	fmt.Fprint(stdout, prompt)
+	_, _ = fmt.Fprint(stdout, prompt)
 	return readLine(r)
 }
 
@@ -135,13 +135,13 @@ func promptLine(r *bufio.Reader, stdout io.Writer, prompt string) (string, error
 // term.ReadPassword requires a real file descriptor, which a bytes.Reader
 // (as every test here uses) does not have.
 func promptSecret(r *bufio.Reader, stdin io.Reader, stdout io.Writer, prompt string) (string, error) {
-	fmt.Fprint(stdout, prompt)
+	_, _ = fmt.Fprint(stdout, prompt)
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		b, err := term.ReadPassword(int(f.Fd()))
 		// ReadPassword consumes the trailing newline without echoing
 		// anything, including a line break - print one so the next prompt
 		// does not land on the same line as this one.
-		fmt.Fprintln(stdout)
+		_, _ = fmt.Fprintln(stdout)
 		if err != nil {
 			return "", fmt.Errorf("reading the API token: %w", err)
 		}
@@ -217,17 +217,17 @@ func writeAuthStatusOutput(w io.Writer, format outputFormat, source string, cred
 		return writeJSON(w, out)
 	}
 
-	fmt.Fprintf(w, "Source:   %s\n", source)
-	fmt.Fprintf(w, "Email:    %s\n", creds.Email)
-	fmt.Fprintf(w, "Cloud ID: %s\n", creds.CloudID)
-	fmt.Fprintf(w, "Site URL: %s\n", creds.SiteURL)
+	_, _ = fmt.Fprintf(w, "Source:   %s\n", source)
+	_, _ = fmt.Fprintf(w, "Email:    %s\n", creds.Email)
+	_, _ = fmt.Fprintf(w, "Cloud ID: %s\n", creds.CloudID)
+	_, _ = fmt.Fprintf(w, "Site URL: %s\n", creds.SiteURL)
 	if verifyErr != nil {
-		fmt.Fprintf(w, "Verified: no (%s)\n", verifyErr)
+		_, _ = fmt.Fprintf(w, "Verified: no (%s)\n", verifyErr)
 		return nil
 	}
-	fmt.Fprintln(w, "Verified: yes")
-	fmt.Fprintf(w, "Name:     %s\n", user.DisplayName)
-	fmt.Fprintf(w, "Account:  %s\n", user.AccountID)
-	fmt.Fprintf(w, "Active:   %v\n", user.Active)
+	_, _ = fmt.Fprintln(w, "Verified: yes")
+	_, _ = fmt.Fprintf(w, "Name:     %s\n", user.DisplayName)
+	_, _ = fmt.Fprintf(w, "Account:  %s\n", user.AccountID)
+	_, _ = fmt.Fprintf(w, "Active:   %v\n", user.Active)
 	return nil
 }

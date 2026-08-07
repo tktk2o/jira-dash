@@ -677,6 +677,11 @@ func (m Model) View() string {
 
 	// Resolved before the rows are windowed: how tall the prompt is decides how
 	// many rows fit.
+	// This switch and promptLines' switch below are two lists of the same modes
+	// and must stay in lockstep: a mode added here without a matching case there
+	// is under-counted, which pushes the footer off-screen rather than failing
+	// loudly. TestPromptLinesMatchesEveryPromptMode in model_test.go asserts the
+	// two never disagree - add the new mode to that test's table too.
 	promptLine, prompting := "", true
 	switch {
 	case m.creating:
@@ -747,6 +752,11 @@ func (m Model) View() string {
 // promptLines is how many lines the prompt currently occupies. It is derived
 // from the same state View renders from, so the two cannot disagree about how
 // much room is left for the table.
+//
+// This switch mirrors View's switch above, case for case: forgetting a case
+// here for a mode View knows about under-counts the chrome and pushes the
+// footer off-screen. TestPromptLinesMatchesEveryPromptMode in model_test.go
+// guards this - extend its table when a new mode is added to either switch.
 func (m Model) promptLines() int {
 	switch {
 	case m.creating:

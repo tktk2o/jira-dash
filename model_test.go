@@ -868,6 +868,21 @@ func TestPickerMovesAndRunsAndCancels(t *testing.T) {
 	}
 }
 
+// Up must stop at 0 the same way Down stops at the last entry - handleChooseKey
+// clamps both ends of the visible list, not just the far one.
+func TestPickerCursorClampsAtTheTop(t *testing.T) {
+	m := press(chooseTestModel(t), "A")
+	if m.chooseCursor != 0 {
+		t.Fatalf("cursor should start at 0, got %d", m.chooseCursor)
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = next.(Model)
+	if m.chooseCursor != 0 {
+		t.Errorf("cursor ran past the first entry: %d", m.chooseCursor)
+	}
+}
+
 // Characters do not need to be adjacent, order matters, and case is ignored -
 // the same contract an fzf-style filter promises everywhere else.
 func TestFuzzyMatchAcceptsInOrderNonAdjacentCaseInsensitiveChars(t *testing.T) {
@@ -890,6 +905,39 @@ func TestFuzzyMatchAcceptsInOrderNonAdjacentCaseInsensitiveChars(t *testing.T) {
 	}
 }
 
+// An empty query matches everything at rank 0, which is what lets
+// visibleChoices return the full, unranked list the instant the picker opens
+// before anything has been typed.
+func TestFuzzyMatchWithEmptyQueryMatchesEverythingAtRankZero(t *testing.T) {
+	for _, label := range []string{"", "anything", "何でも"} {
+		rank, ok := fuzzyMatch(label, "")
+		if !ok || rank != 0 {
+			t.Errorf("fuzzyMatch(%q, \"\") = (%d, %v), want (0, true)", label, rank, ok)
+		}
+	}
+}
+
+// Japanese labels are matched rune by rune, not byte by byte - a naive byte
+// comparison would either miss every multi-byte character or match on a
+// continuation byte that happens to coincide with an ASCII query rune.
+func TestFuzzyMatchOnJapaneseText(t *testing.T) {
+	for _, tc := range []struct {
+		name, label, query string
+		want               bool
+	}{
+		{"in-order subsequence of a Japanese name matches", "加藤拓人", "加人", true},
+		{"a kana not in the label does not match", "加藤拓人", "藤木", false},
+		{"full label as the query matches", "進行中", "進行中", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := fuzzyMatch(tc.label, tc.query)
+			if ok != tc.want {
+				t.Errorf("fuzzyMatch(%q, %q) ok = %v, want %v", tc.label, tc.query, ok, tc.want)
+			}
+		})
+	}
+}
+
 // Equal-span matches are ordered by their start position.
 func TestFuzzyRankSortsEarlierTighterMatchesFirst(t *testing.T) {
 	// "ab": both matches are adjacent, but Abacus starts first.
@@ -901,7 +949,7 @@ func TestFuzzyRankSortsEarlierTighterMatchesFirst(t *testing.T) {
 	if !ok {
 		t.Fatal("Cab should match \"ab\"")
 	}
-	if !(rankAbacus < rankCab) {
+	if rankAbacus >= rankCab {
 		t.Errorf("rank(Abacus)=%d should be less than rank(Cab)=%d", rankAbacus, rankCab)
 	}
 
@@ -1259,6 +1307,66 @@ func TestPickerBoxIsAsTallAsTheLayoutWasToldItIs(t *testing.T) {
 	box := renderPromptBox(m, choosePromptTitle(m),
 		renderChoices(m, max(0, m.tableWidth()-6)), "enter select", m.tableWidth())
 
+	if got, want := strings.Count(box, "\n")+1, m.promptLines(); got != want {
+		t.Errorf("the box drew %d lines, promptLines says %d", got, want)
+	}
+}
+
+// promptLines and View's own switch (see the comments on both) are two
+// separate lists of the same prompt modes, kept in sync by hand rather than by
+// the type system. This walks every mode the model can be in and checks that
+// the number of lines View actually draws for the prompt/filter area matches
+// what promptLines reports for it - the mechanical guard the comments point
+// at, so a mode added to one switch but not the other fails a test instead of
+// silently pushing the footer off-screen.
+func TestPromptLinesMatchesEveryPromptMode(t *testing.T) {
+	t.Run("creating", func(t *testing.T) {
+		m := press(createTestModel(t, nil), "c")
+		box := renderPromptBox(m, createPromptTitle(m), m.prompt.View(),
+			"Ctrl+d submit ⋅ esc cancel", m.tableWidth())
+		assertPromptLinesMatches(t, m, box)
+	})
+	t.Run("asking", func(t *testing.T) {
+		m := press(askTestModel(t), "a")
+		box := renderPromptBox(m, askPromptTitle(m), m.prompt.View(),
+			"Ctrl+d submit ⋅ enter newline ⋅ esc cancel", m.tableWidth())
+		assertPromptLinesMatches(t, m, box)
+	})
+	t.Run("choosing", func(t *testing.T) {
+		m := press(chooseTestModel(t), "A")
+		box := renderPromptBox(m, choosePromptTitle(m),
+			renderChoices(m, max(0, m.tableWidth()-6)),
+			"type to filter ⋅ ↑/↓ move ⋅ enter select ⋅ esc cancel", m.tableWidth())
+		assertPromptLinesMatches(t, m, box)
+	})
+	t.Run("filtering", func(t *testing.T) {
+		m := newTestModel(t, fakeSearcher{})
+		m = press(m, "/")
+		if got, want := m.promptLines(), 1; got != want {
+			t.Errorf("promptLines() = %d, want %d", got, want)
+		}
+	})
+	t.Run("section filter set", func(t *testing.T) {
+		m := newTestModel(t, fakeSearcher{})
+		m.sections[m.active].filter = "x"
+		if got, want := m.promptLines(), 1; got != want {
+			t.Errorf("promptLines() = %d, want %d", got, want)
+		}
+	})
+	t.Run("idle", func(t *testing.T) {
+		m := newTestModel(t, fakeSearcher{})
+		if got, want := m.promptLines(), 0; got != want {
+			t.Errorf("promptLines() = %d, want %d", got, want)
+		}
+	})
+}
+
+// assertPromptLinesMatches checks that a rendered prompt box is exactly as
+// tall as promptLines() says it is - the two disagreeing is exactly how the
+// footer gets pushed off-screen, since tableHeight is sized from promptLines
+// rather than from the box itself.
+func assertPromptLinesMatches(t *testing.T, m Model, box string) {
+	t.Helper()
 	if got, want := strings.Count(box, "\n")+1, m.promptLines(); got != want {
 		t.Errorf("the box drew %d lines, promptLines says %d", got, want)
 	}

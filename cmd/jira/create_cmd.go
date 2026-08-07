@@ -185,22 +185,22 @@ func runCreate(ctx context.Context, client jiraClient, args []string, stdout io.
 // network call, which --dry-run must not make, per the migration plan),
 // the fields a follow-up Edit would carry, and any --fields-json content.
 func printCreateDryRun(w io.Writer, f createFlags, description string, extraFields map[string]any) {
-	fmt.Fprintf(w, "POST /issue (project=%s, issuetype=%s)\n", f.project, f.issueType)
-	fmt.Fprintf(w, "  summary: %s\n", f.summary)
+	_, _ = fmt.Fprintf(w, "POST /issue (project=%s, issuetype=%s)\n", f.project, f.issueType)
+	_, _ = fmt.Fprintf(w, "  summary: %s\n", f.summary)
 	if description != "" {
-		fmt.Fprintln(w, "  description: <plain text, sent as ADF>")
+		_, _ = fmt.Fprintln(w, "  description: <plain text, sent as ADF>")
 	}
 	if f.sprint != "" {
-		fmt.Fprintf(w, "  sprint: %s (name/id resolved to a board sprint at send time)\n", f.sprint)
+		_, _ = fmt.Fprintf(w, "  sprint: %s (name/id resolved to a board sprint at send time)\n", f.sprint)
 	}
 	if edit, hasEdit := postCreateEdit(f); hasEdit {
-		fmt.Fprintln(w, "then PUT /issue/<new key> with:")
+		_, _ = fmt.Fprintln(w, "then PUT /issue/<new key> with:")
 		printEditPreview(w, edit)
 	}
 	if len(extraFields) > 0 {
-		fmt.Fprintln(w, "--fields-json would merge (not currently sendable):")
+		_, _ = fmt.Fprintln(w, "--fields-json would merge (not currently sendable):")
 		for k, v := range extraFields {
-			fmt.Fprintf(w, "  %s: %v\n", k, v)
+			_, _ = fmt.Fprintf(w, "  %s: %v\n", k, v)
 		}
 	}
 }

@@ -52,7 +52,7 @@ func runCommentAdd(ctx context.Context, client jiraClient, args []string, stdout
 		// internal/jira) - this is the text that would be sent, in the form
 		// the caller wrote it, which is enough to review before sending for
 		// real.
-		fmt.Fprintf(stdout, "POST /issue/%s/comment\nbody (plain text, sent as ADF):\n%s\n", key, resolvedBody)
+		_, _ = fmt.Fprintf(stdout, "POST /issue/%s/comment\nbody (plain text, sent as ADF):\n%s\n", key, resolvedBody)
 		return nil
 	}
 
@@ -110,7 +110,7 @@ func runCommentList(ctx context.Context, client jiraClient, args []string, stdou
 // out of scope per the migration plan's own scope table).
 func runComment(ctx context.Context, client jiraClient, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: jira comment <add|list> ...")
+		return fmt.Errorf("usage: jira comment <add|list>")
 	}
 	switch args[0] {
 	case "add":

@@ -43,7 +43,7 @@ func TestClientCommentsMapsJiraFieldsOntoComment(t *testing.T) {
 	if got[0].ID != "10001" || got[0].Author != "Ada" || got[0].Body != "looks good" {
 		t.Errorf("got = %+v", got[0])
 	}
-	if got[0].Created.Time.IsZero() {
+	if got[0].Created.IsZero() {
 		t.Error("Created should be parsed, not zero")
 	}
 }

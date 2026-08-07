@@ -6,11 +6,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 )
 
-const httpTimeout = 30 * time.Second
+// defaultTimeout bounds a single HTTP round trip. Without it a hung
+// connection (a dead proxy, a Jira instance that stopped answering) blocks
+// this program forever instead of surfacing as an error the caller can act
+// on.
+const defaultTimeout = 30 * time.Second
+
+// maxAttempts caps doAt's retry loop, including the first try. Retrying
+// forever on a Jira outage just delays the same failure the caller would
+// get from attempt 1; three tries is enough to ride out a blip without
+// making a broken Jira feel hung.
+const maxAttempts = 3
+
+// retryBaseDelay is doAt's exponential-backoff starting point (doubling each
+// attempt: 200ms, 400ms, ...). Tests override it via a package var, rather
+// than a parameter threaded through every call, so client_test.go can run
+// the same retry loop in milliseconds instead of seconds.
+var retryBaseDelay = 200 * time.Millisecond
 
 // Client is an authenticated door to one Jira Cloud site. It holds no
 // mutable state beyond the http.Client's own connection pool, so a single
@@ -29,7 +47,7 @@ type Client struct {
 // call - a bad token only surfaces on the first request, which is when this
 // program can actually say what went wrong.
 func NewClient(creds Credentials) *Client {
-	return &Client{creds: creds, http: &http.Client{Timeout: httpTimeout}}
+	return &Client{creds: creds, http: &http.Client{Timeout: defaultTimeout}}
 }
 
 // BaseURL is the root of the platform REST API: issues, comments, fields,
@@ -78,51 +96,147 @@ func (c *Client) doAgile(ctx context.Context, method, path string, body, out any
 // hit - the two APIs differ only in that root, never in auth, headers, or
 // error handling.
 func (c *Client) doAt(ctx context.Context, root, method, path string, body, out any) error {
-	var bodyReader io.Reader
+	var encoded []byte
 	if body != nil {
-		encoded, err := json.Marshal(body)
+		var err error
+		encoded, err = json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("encoding request body: %w", err)
 		}
-		bodyReader = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, root+path, bodyReader)
-	if err != nil {
-		return fmt.Errorf("building request: %w", err)
-	}
-	// Basic auth over HTTPS, per Atlassian's own API: the token never touches
-	// a query string or a log line this way.
-	req.SetBasicAuth(c.creds.Email, c.creds.APIToken)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepForRetry(ctx, retryBaseDelay, attempt, lastErr); err != nil {
+				return err
+			}
+		}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		// The error from net/http can embed the request URL, but never the
-		// Authorization header, so nothing here needs scrubbing.
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
+		var bodyReader io.Reader
+		if encoded != nil {
+			bodyReader = bytes.NewReader(encoded)
+		}
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading response for %s %s: %w", method, path, err)
-	}
+		req, err := http.NewRequestWithContext(ctx, method, root+path, bodyReader)
+		if err != nil {
+			return fmt.Errorf("building request: %w", err)
+		}
+		// GetBody lets net/http (and this loop, on retry) re-read the body
+		// after a redirect or a failed attempt has already drained the
+		// bytes.Reader above once.
+		if encoded != nil {
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(encoded)), nil
+			}
+		}
+		// Basic auth over HTTPS, per Atlassian's own API: the token never touches
+		// a query string or a log line this way.
+		req.SetBasicAuth(c.creds.Email, c.creds.APIToken)
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return httpError(resp.StatusCode, respBody)
-	}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			// A cancelled/expired context surfaces through http.Client as a
+			// wrapped context error; retrying it would just spin until the
+			// same context error fires again, so stop here instead.
+			if ctx.Err() != nil {
+				return fmt.Errorf("%s %s: %w", method, path, err)
+			}
+			lastErr = fmt.Errorf("%s %s: %w", method, path, err)
+			continue
+		}
 
-	if out == nil || len(respBody) == 0 {
+		respBody, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("reading response for %s %s: %w", method, path, err)
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if !isRetryableStatus(resp.StatusCode) {
+				return httpError(resp.StatusCode, respBody)
+			}
+			lastErr = retryableStatusError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")), body: respBody}
+			continue
+		}
+
+		if out == nil || len(respBody) == 0 {
+			return nil
+		}
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("decoding response for %s %s: %w", method, path, err)
+		}
 		return nil
 	}
-	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("decoding response for %s %s: %w", method, path, err)
+
+	if rse, ok := lastErr.(retryableStatusError); ok {
+		return httpError(rse.status, rse.body)
 	}
-	return nil
+	return lastErr
+}
+
+// isRetryableStatus is Jira saying "ask again later" (429) or "something on
+// my end broke" (5xx). Any other 4xx means the request itself was wrong, and
+// retrying an unchanged wrong request just gets the same rejection.
+func isRetryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500
+}
+
+// retryableStatusError carries a retryable non-2xx response through the
+// retry loop so the final attempt's httpError message (with Jira's own
+// wording) is what the caller sees, not a generic "gave up after N tries".
+type retryableStatusError struct {
+	status     int
+	retryAfter time.Duration
+	body       []byte
+}
+
+func (e retryableStatusError) Error() string {
+	return httpError(e.status, e.body).Error()
+}
+
+// parseRetryAfter reads a 429's Retry-After header, which Jira sends as a
+// count of seconds rather than an HTTP-date. A missing or unparseable
+// header returns 0, leaving the caller to fall back to plain exponential
+// backoff.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	seconds, err := strconv.Atoi(header)
+	if err != nil || seconds < 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// sleepForRetry waits before doAt's next attempt: Retry-After verbatim when
+// the previous failure was a 429 that specified one, otherwise exponential
+// backoff with jitter (attempt 1 -> base, attempt 2 -> 2*base, ...). Jitter
+// keeps many concurrent callers hitting a rate limit from retrying in
+// lockstep. It returns early with ctx.Err() if the context is cancelled
+// mid-wait, so a caller that gave up does not sit through a needless sleep.
+func sleepForRetry(ctx context.Context, base time.Duration, attempt int, lastErr error) error {
+	delay := base * time.Duration(1<<(attempt-1))
+	if rse, ok := lastErr.(retryableStatusError); ok && rse.retryAfter > 0 {
+		delay = rse.retryAfter
+	} else {
+		delay += time.Duration(rand.Int63n(int64(base)))
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // httpError turns a non-2xx response into an error a person can act on. 401

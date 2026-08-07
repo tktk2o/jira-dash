@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // newTestClient builds a Client whose base URL points at an httptest.Server
@@ -18,6 +20,12 @@ import (
 func newTestClient(t *testing.T, serverURL string) *Client {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	// Retry backoff defaults to 200ms/attempt; these tests exercise the
+	// retry loop several times over and would otherwise spend real seconds
+	// sleeping for no assertion's benefit.
+	original := retryBaseDelay
+	retryBaseDelay = time.Millisecond
+	t.Cleanup(func() { retryBaseDelay = original })
 	return &Client{
 		creds:   Credentials{Email: "a@example.com", APIToken: "tok"},
 		http:    &http.Client{},
@@ -137,5 +145,102 @@ func TestAgileURLUsesTheSameOverrideAsBaseURL(t *testing.T) {
 	c := newTestClient(t, "http://example.invalid")
 	if got, want := c.AgileURL(), "http://example.invalid/rest/agile/1.0"; got != want {
 		t.Errorf("AgileURL() = %q, want %q", got, want)
+	}
+}
+
+// A 429 with Retry-After must be honored, not raced past on the generic
+// backoff schedule - it is Jira naming the wait itself.
+func TestClientRetriesA429AfterRetryAfterThenSucceeds(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	var out struct{ OK bool }
+	err := newTestClient(t, srv.URL).do(context.Background(), http.MethodGet, "/myself", nil, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Error("the body was not decoded on the successful retry")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2", got)
+	}
+}
+
+// A transient 500 is exactly the case retries exist for: the same request,
+// unchanged, is expected to work on a second try.
+func TestClientRetriesA500ThenSucceeds(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv.URL).do(context.Background(), http.MethodGet, "/myself", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2", got)
+	}
+}
+
+// A 400 means the request itself is wrong; retrying it unchanged would just
+// reproduce the same rejection maxAttempts times for no benefit.
+func TestClientDoesNotRetryA4xx(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv.URL).do(context.Background(), http.MethodGet, "/myself", nil, nil)
+	if err == nil {
+		t.Fatal("want an error for a 400")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1 (no retry)", got)
+	}
+}
+
+// A cancelled context must stop the retry loop immediately rather than
+// sleeping through the remaining backoff schedule regardless of the
+// caller's own deadline.
+func TestClientStopsRetryingOnContextCancellation(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	retryBaseDelay = time.Hour // any retry sleep would hang the test if cancellation were ignored
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-time.After(10 * time.Millisecond)
+		cancel()
+	}()
+
+	err := c.do(ctx, http.MethodGet, "/myself", nil, nil)
+	if err == nil {
+		t.Fatal("want an error after cancellation")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1 (cancelled before a second attempt)", got)
 	}
 }

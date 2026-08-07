@@ -7,7 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// fieldsCacheTTL is how long a cached FieldIDs is trusted before this
+// program refetches: long enough that every call in a normal working day
+// hits the cache, short enough that a site's custom fields (added or
+// renamed rarely, per FieldIDs' own doc comment) do not stay stale forever
+// just because deleting the file by hand is the only other way to notice.
+const fieldsCacheTTL = 24 * time.Hour
 
 // FieldIDs are the customfield_NNNNN ids this program needs, resolved at
 // runtime rather than hardcoded: each site's Jira admin assigns its own ids
@@ -112,6 +120,23 @@ func readFieldIDsCache(path string) (FieldIDs, bool) {
 	return ids, true
 }
 
+// fieldsCacheFresh reports whether path's cache file is younger than
+// fieldsCacheTTL, using the file's own mtime rather than a timestamp stored
+// inside it - one less thing that can drift out of sync with the file it
+// describes. A file that cannot be stat'd (missing, permissions) is treated
+// as not fresh, matching readFieldIDsCache's own "every failure is a miss"
+// rule.
+func fieldsCacheFresh(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < fieldsCacheTTL
+}
+
 // writeFieldIDsCache best-efforts a write and swallows any failure for the
 // same reason readFieldIDsCache treats every read failure as a miss: this is
 // derived data, and a user who cannot write ~/.cache should still get a
@@ -133,17 +158,24 @@ func writeFieldIDsCache(path string, ids FieldIDs) {
 // FieldIDs resolves this site's custom field ids by name from GET /field,
 // caching the result on disk keyed by cloud id so that every other call in
 // this program - and every other run on this machine - can skip the round
-// trip. There is no cache invalidation beyond deleting the file: a site adds
-// or renames custom fields rarely enough that this program does not try to
-// notice on its own.
+// trip. The cache expires after fieldsCacheTTL (a site adds or renames
+// custom fields rarely, but rarely is not never), and a fetch that fails
+// with a stale cache still on disk falls back to that stale cache rather
+// than failing outright: a working-but-old FieldIDs is more useful than no
+// FieldIDs at all when, say, the network is briefly down.
 func (c *Client) FieldIDs(ctx context.Context) (FieldIDs, error) {
 	path := fieldsCachePath(c.creds.CloudID)
-	if ids, ok := readFieldIDsCache(path); ok {
-		return ids, nil
+	if fieldsCacheFresh(path) {
+		if ids, ok := readFieldIDsCache(path); ok {
+			return ids, nil
+		}
 	}
 
 	var raws []rawField
 	if err := c.do(ctx, http.MethodGet, "/field", nil, &raws); err != nil {
+		if ids, ok := readFieldIDsCache(path); ok {
+			return ids, nil
+		}
 		return FieldIDs{}, err
 	}
 

@@ -136,17 +136,17 @@ func SaveCredentials(c Credentials) (string, error) {
 		return "", fmt.Errorf("creating temporary credentials file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", fmt.Errorf("securing temporary credentials file: %w", err)
 	}
 	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", fmt.Errorf("writing temporary credentials file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", fmt.Errorf("syncing temporary credentials file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

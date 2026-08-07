@@ -91,9 +91,9 @@ func openInEditor(cmdLine, initial string) (string, error) {
 		return "", fmt.Errorf("creating a scratch file for the editor: %w", err)
 	}
 	path := f.Name()
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 	if _, err := f.WriteString(initial); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", fmt.Errorf("writing the scratch file: %w", err)
 	}
 	if err := f.Close(); err != nil {
@@ -150,21 +150,4 @@ func mergeFieldsJSON(into map[string]any, raw []byte, source string) error {
 		into[k] = v
 	}
 	return nil
-}
-
-// splitTrimmed splits a comma-separated flag value the way search's -L and
-// create/edit's -l already promise, dropping blanks so a trailing comma
-// does not become an empty label.
-func splitTrimmed(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }

@@ -80,13 +80,33 @@ type rawBoard struct {
 	ID int `json:"id"`
 }
 
+// boardsResponse is one page of GET /board. IsLast is the agile API's own
+// signal that there is no next page - startAt/maxResults alone would leave
+// callers guessing whether a short page meant "done" or "coincidentally
+// exactly maxResults short of the truth".
 type boardsResponse struct {
 	Values []rawBoard `json:"values"`
+	IsLast bool       `json:"isLast"`
 }
 
+// sprintsResponse is one page of GET /board/{id}/sprint, paginated the same
+// way boardsResponse is.
 type sprintsResponse struct {
 	Values []Sprint `json:"values"`
+	IsLast bool     `json:"isLast"`
 }
+
+// maxActiveSprintPages caps how many pages ActiveSprint will fetch per
+// board/sprint listing. A real site's boards or sprints number in the tens
+// to low hundreds; this cap exists so a site that never returns isLast=true
+// (a misbehaving proxy, say) makes ActiveSprint fail loudly instead of
+// looping forever.
+const maxActiveSprintPages = 50
+
+// pageSize is the maxResults this program asks the agile API for per page.
+// Large enough that most sites finish in one round trip, without being so
+// large a single response becomes unwieldy.
+const pageSize = 50
 
 // ActiveSprint resolves a sprint name to the Sprint a new issue should join:
 // the board's active sprint if its name has prefix, otherwise a future one
@@ -97,25 +117,22 @@ type sprintsResponse struct {
 // created here could look misfiled the moment it is searched for.
 func (c *Client) ActiveSprint(ctx context.Context, projectKey, prefix string) (Sprint, error) {
 	wantedID, byIDErr := strconv.Atoi(prefix)
-	q := url.Values{"projectKeyOrId": {projectKey}}
-	var boards boardsResponse
-	if err := c.doAgile(ctx, http.MethodGet, "/board?"+q.Encode(), nil, &boards); err != nil {
+	boards, err := c.listBoards(ctx, projectKey)
+	if err != nil {
 		return Sprint{}, err
 	}
-	if len(boards.Values) == 0 {
+	if len(boards) == 0 {
 		return Sprint{}, fmt.Errorf("no board found for project %q", projectKey)
 	}
 
 	var future Sprint
 	var haveFuture bool
-	for _, board := range boards.Values {
-		sq := url.Values{"state": {"active,future"}}
-		var sprints sprintsResponse
-		path := fmt.Sprintf("/board/%d/sprint?%s", board.ID, sq.Encode())
-		if err := c.doAgile(ctx, http.MethodGet, path, nil, &sprints); err != nil {
+	for _, board := range boards {
+		sprints, err := c.listSprints(ctx, board.ID)
+		if err != nil {
 			return Sprint{}, err
 		}
-		for _, s := range sprints.Values {
+		for _, s := range sprints {
 			matches := prefix == "" || (byIDErr == nil && s.ID == wantedID) ||
 				(byIDErr != nil && strings.HasPrefix(s.Name, prefix))
 			if !matches {
@@ -135,4 +152,52 @@ func (c *Client) ActiveSprint(ctx context.Context, projectKey, prefix string) (S
 		return future, nil
 	}
 	return Sprint{}, fmt.Errorf("no active or future sprint named %q found for project %q", prefix, projectKey)
+}
+
+// listBoards walks every page of GET /board for a project, stopping at
+// isLast (or maxActiveSprintPages, whichever comes first) so a site with
+// more boards than fit on one page is not silently truncated to its first
+// page - the bug this function exists to fix.
+func (c *Client) listBoards(ctx context.Context, projectKey string) ([]rawBoard, error) {
+	var boards []rawBoard
+	for page := 0; page < maxActiveSprintPages; page++ {
+		q := url.Values{
+			"projectKeyOrId": {projectKey},
+			"startAt":        {strconv.Itoa(page * pageSize)},
+			"maxResults":     {strconv.Itoa(pageSize)},
+		}
+		var resp boardsResponse
+		if err := c.doAgile(ctx, http.MethodGet, "/board?"+q.Encode(), nil, &resp); err != nil {
+			return nil, err
+		}
+		boards = append(boards, resp.Values...)
+		if resp.IsLast || len(resp.Values) == 0 {
+			return boards, nil
+		}
+	}
+	return boards, nil
+}
+
+// listSprints walks every page of GET /board/{id}/sprint the same way
+// listBoards walks /board, so a board with more active/future sprints than
+// fit on one page cannot hide the real active sprint on a later page.
+func (c *Client) listSprints(ctx context.Context, boardID int) ([]Sprint, error) {
+	var sprints []Sprint
+	for page := 0; page < maxActiveSprintPages; page++ {
+		q := url.Values{
+			"state":      {"active,future"},
+			"startAt":    {strconv.Itoa(page * pageSize)},
+			"maxResults": {strconv.Itoa(pageSize)},
+		}
+		var resp sprintsResponse
+		path := fmt.Sprintf("/board/%d/sprint?%s", boardID, q.Encode())
+		if err := c.doAgile(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return nil, err
+		}
+		sprints = append(sprints, resp.Values...)
+		if resp.IsLast || len(resp.Values) == 0 {
+			return sprints, nil
+		}
+	}
+	return sprints, nil
 }

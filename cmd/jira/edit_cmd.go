@@ -213,7 +213,7 @@ func printEditPreview(w io.Writer, e jirapkg.Edit) {
 		if v == nil {
 			return
 		}
-		fmt.Fprintf(w, "  %s: %s\n", name, *v)
+		_, _ = fmt.Fprintf(w, "  %s: %s\n", name, *v)
 	}
 	print("summary", e.Summary)
 	print("description", e.Description)
@@ -230,7 +230,7 @@ func printEditPreview(w io.Writer, e jirapkg.Edit) {
 	print("due", e.Due)
 	print("fix_versions", e.FixVersions)
 	if e.Flag != nil {
-		fmt.Fprintf(w, "  flag: %v\n", *e.Flag)
+		_, _ = fmt.Fprintf(w, "  flag: %v\n", *e.Flag)
 	}
 }
 
@@ -239,16 +239,16 @@ func printEditPreview(w io.Writer, e jirapkg.Edit) {
 // call this program makes after the PUT, never merged into it.
 func printEditDryRun(w io.Writer, key string, e jirapkg.Edit, status string, extraFields map[string]any) {
 	if hasEditFields(e) {
-		fmt.Fprintf(w, "PUT /issue/%s with:\n", key)
+		_, _ = fmt.Fprintf(w, "PUT /issue/%s with:\n", key)
 		printEditPreview(w, e)
 	}
 	if status != "" {
-		fmt.Fprintf(w, "POST /issue/%s/transitions -> %s\n", key, status)
+		_, _ = fmt.Fprintf(w, "POST /issue/%s/transitions -> %s\n", key, status)
 	}
 	if len(extraFields) > 0 {
-		fmt.Fprintln(w, "--fields-json would merge (not currently sendable):")
+		_, _ = fmt.Fprintln(w, "--fields-json would merge (not currently sendable):")
 		for k, v := range extraFields {
-			fmt.Fprintf(w, "  %s: %v\n", k, v)
+			_, _ = fmt.Fprintf(w, "  %s: %v\n", k, v)
 		}
 	}
 }

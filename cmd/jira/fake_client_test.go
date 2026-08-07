@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 
 	jirapkg "jira-dash/internal/jira"
 )
@@ -99,7 +98,3 @@ func (f *fakeClient) AssignableUsers(ctx context.Context, issueKey, query string
 	f.calls = append(f.calls, "AssignableUsers")
 	return f.assignableUsers, f.assignableErr
 }
-
-// errNotConfigured is a sentinel a test can assign to make a call fail
-// loudly instead of returning a zero value that might pass by accident.
-var errNotConfigured = errors.New("fakeClient: this call was not configured for this test")

@@ -88,16 +88,16 @@ func writeGetOutput(w io.Writer, format outputFormat, issue jirapkg.Issue, descr
 	case formatMarkdown:
 		return writeGetMarkdown(w, issue, description)
 	}
-	fmt.Fprintf(w, "%s  %s\n", issue.Key, issue.Summary)
-	fmt.Fprintf(w, "Type:     %s\n", issue.Type)
-	fmt.Fprintf(w, "Status:   %s\n", issue.Status)
-	fmt.Fprintf(w, "Priority: %s\n", issue.Priority)
-	fmt.Fprintf(w, "Assignee: %s\n", issue.AssigneeName())
+	_, _ = fmt.Fprintf(w, "%s  %s\n", issue.Key, issue.Summary)
+	_, _ = fmt.Fprintf(w, "Type:     %s\n", issue.Type)
+	_, _ = fmt.Fprintf(w, "Status:   %s\n", issue.Status)
+	_, _ = fmt.Fprintf(w, "Priority: %s\n", issue.Priority)
+	_, _ = fmt.Fprintf(w, "Assignee: %s\n", issue.AssigneeName())
 	if len(issue.Labels) > 0 {
-		fmt.Fprintf(w, "Labels:   %s\n", strings.Join(issue.Labels, ", "))
+		_, _ = fmt.Fprintf(w, "Labels:   %s\n", strings.Join(issue.Labels, ", "))
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, description)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, description)
 	return nil
 }
 
@@ -121,23 +121,23 @@ func yamlScalar(s string) string {
 // format the old CLI offered as an alternative to table, not a second
 // machine format alongside json.
 func writeGetYAML(w io.Writer, issue jirapkg.Issue, description string) error {
-	fmt.Fprintf(w, "key: %s\n", yamlScalar(issue.Key))
-	fmt.Fprintf(w, "summary: %s\n", yamlScalar(issue.Summary))
-	fmt.Fprintf(w, "type: %s\n", yamlScalar(issue.Type))
-	fmt.Fprintf(w, "status: %s\n", yamlScalar(issue.Status))
-	fmt.Fprintf(w, "priority: %s\n", yamlScalar(issue.Priority))
-	fmt.Fprintf(w, "assignee: %s\n", yamlScalar(issue.AssigneeName()))
+	_, _ = fmt.Fprintf(w, "key: %s\n", yamlScalar(issue.Key))
+	_, _ = fmt.Fprintf(w, "summary: %s\n", yamlScalar(issue.Summary))
+	_, _ = fmt.Fprintf(w, "type: %s\n", yamlScalar(issue.Type))
+	_, _ = fmt.Fprintf(w, "status: %s\n", yamlScalar(issue.Status))
+	_, _ = fmt.Fprintf(w, "priority: %s\n", yamlScalar(issue.Priority))
+	_, _ = fmt.Fprintf(w, "assignee: %s\n", yamlScalar(issue.AssigneeName()))
 	if len(issue.Labels) == 0 {
-		fmt.Fprintln(w, "labels: []")
+		_, _ = fmt.Fprintln(w, "labels: []")
 	} else {
-		fmt.Fprintln(w, "labels:")
+		_, _ = fmt.Fprintln(w, "labels:")
 		for _, l := range issue.Labels {
-			fmt.Fprintf(w, "  - %s\n", yamlScalar(l))
+			_, _ = fmt.Fprintf(w, "  - %s\n", yamlScalar(l))
 		}
 	}
-	fmt.Fprintln(w, "description: |")
+	_, _ = fmt.Fprintln(w, "description: |")
 	for _, line := range strings.Split(description, "\n") {
-		fmt.Fprintf(w, "  %s\n", line)
+		_, _ = fmt.Fprintf(w, "  %s\n", line)
 	}
 	return nil
 }
@@ -146,16 +146,16 @@ func writeGetYAML(w io.Writer, issue jirapkg.Issue, description string) error {
 // bullet list of the same fields, the shape a person would paste into a
 // PR description or a chat message.
 func writeGetMarkdown(w io.Writer, issue jirapkg.Issue, description string) error {
-	fmt.Fprintf(w, "# %s: %s\n\n", issue.Key, issue.Summary)
-	fmt.Fprintf(w, "- **Type:** %s\n", issue.Type)
-	fmt.Fprintf(w, "- **Status:** %s\n", issue.Status)
-	fmt.Fprintf(w, "- **Priority:** %s\n", issue.Priority)
-	fmt.Fprintf(w, "- **Assignee:** %s\n", issue.AssigneeName())
+	_, _ = fmt.Fprintf(w, "# %s: %s\n\n", issue.Key, issue.Summary)
+	_, _ = fmt.Fprintf(w, "- **Type:** %s\n", issue.Type)
+	_, _ = fmt.Fprintf(w, "- **Status:** %s\n", issue.Status)
+	_, _ = fmt.Fprintf(w, "- **Priority:** %s\n", issue.Priority)
+	_, _ = fmt.Fprintf(w, "- **Assignee:** %s\n", issue.AssigneeName())
 	if len(issue.Labels) > 0 {
-		fmt.Fprintf(w, "- **Labels:** %s\n", strings.Join(issue.Labels, ", "))
+		_, _ = fmt.Fprintf(w, "- **Labels:** %s\n", strings.Join(issue.Labels, ", "))
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, description)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, description)
 	return nil
 }
 
@@ -174,13 +174,13 @@ func writeSearchOutput(w io.Writer, format outputFormat, jql string, issues []ji
 		return writeJSON(w, searchOutput{JQL: jql, Total: len(issues), Results: issues})
 	}
 	if len(issues) == 0 {
-		fmt.Fprintln(w, "No issues found")
+		_, _ = fmt.Fprintln(w, "No issues found")
 		return nil
 	}
-	fmt.Fprintf(w, "Found %d issue(s)\n\n", len(issues))
-	fmt.Fprintf(w, "%-12s %-10s %-14s %-18s %s\n", "Key", "Type", "Status", "Assignee", "Summary")
+	_, _ = fmt.Fprintf(w, "Found %d issue(s)\n\n", len(issues))
+	_, _ = fmt.Fprintf(w, "%-12s %-10s %-14s %-18s %s\n", "Key", "Type", "Status", "Assignee", "Summary")
 	for _, issue := range issues {
-		fmt.Fprintf(w, "%-12s %-10s %-14s %-18s %s\n", issue.Key, issue.Type, issue.Status, issue.AssigneeName(), issue.Summary)
+		_, _ = fmt.Fprintf(w, "%-12s %-10s %-14s %-18s %s\n", issue.Key, issue.Type, issue.Status, issue.AssigneeName(), issue.Summary)
 	}
 	return nil
 }
@@ -202,7 +202,7 @@ func writeCommentAddOutput(w io.Writer, format outputFormat, c jirapkg.Comment) 
 	if format == formatJSON {
 		return writeJSON(w, c)
 	}
-	fmt.Fprintf(w, "Comment %s added\n", c.ID)
+	_, _ = fmt.Fprintf(w, "Comment %s added\n", c.ID)
 	return nil
 }
 
@@ -210,7 +210,7 @@ func writeCreateOutput(w io.Writer, format outputFormat, issue jirapkg.Issue) er
 	if format == formatJSON {
 		return writeJSON(w, issue)
 	}
-	fmt.Fprintf(w, "Created %s: %s\n", issue.Key, issue.Summary)
+	_, _ = fmt.Fprintf(w, "Created %s: %s\n", issue.Key, issue.Summary)
 	return nil
 }
 
@@ -218,7 +218,7 @@ func writeEditOutput(w io.Writer, format outputFormat, key string) error {
 	if format == formatJSON {
 		return writeJSON(w, map[string]string{"key": key, "status": "updated"})
 	}
-	fmt.Fprintf(w, "Updated %s\n", key)
+	_, _ = fmt.Fprintf(w, "Updated %s\n", key)
 	return nil
 }
 
@@ -234,11 +234,11 @@ func writeTransitionsOutput(w io.Writer, format outputFormat, transitions []jira
 		return writeJSON(w, transitionsOutput{Transitions: transitions})
 	}
 	if len(transitions) == 0 {
-		fmt.Fprintln(w, "No transitions available")
+		_, _ = fmt.Fprintln(w, "No transitions available")
 		return nil
 	}
 	for _, t := range transitions {
-		fmt.Fprintf(w, "%-6s %s\n", t.ID, t.Name)
+		_, _ = fmt.Fprintf(w, "%-6s %s\n", t.ID, t.Name)
 	}
 	return nil
 }
@@ -254,11 +254,11 @@ func writeUsersOutput(w io.Writer, format outputFormat, users []jirapkg.User) er
 		return writeJSON(w, usersOutput{Users: users})
 	}
 	if len(users) == 0 {
-		fmt.Fprintln(w, "No assignable users found")
+		_, _ = fmt.Fprintln(w, "No assignable users found")
 		return nil
 	}
 	for _, u := range users {
-		fmt.Fprintf(w, "%-24s %-28s %s\n", u.AccountID, u.DisplayName, u.Email)
+		_, _ = fmt.Fprintf(w, "%-24s %-28s %s\n", u.AccountID, u.DisplayName, u.Email)
 	}
 	return nil
 }
