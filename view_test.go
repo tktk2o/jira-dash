@@ -307,8 +307,10 @@ func TestCopiedMsgReportsOnTheFooter(t *testing.T) {
 
 	next, _ := m.Update(copiedMsg{value: "ABC-1"})
 	m = next.(Model)
-	if !strings.Contains(m.status, "ABC-1") {
-		t.Errorf("status = %q, want it to mention what was copied", m.status)
+	// The value is bracketed so a URL's own punctuation cannot be mistaken for
+	// part of the sentence around it.
+	if got, want := m.status, "[ABC-1] copied!"; got != want {
+		t.Errorf("status = %q, want %q", got, want)
 	}
 
 	next, _ = m.Update(copiedMsg{value: "ABC-1", err: errTest})
@@ -870,4 +872,21 @@ func TestSelectedRowCarriesTheFillInEverySegment(t *testing.T) {
 // every assertion here is about layout, not colour.
 func plainRow(i Issue, width int, now time.Time) string {
 	return plain(renderRow(i, allColumns, width, now, newRowStyles(Theme{}, false)))
+}
+
+// Y copies a full issue URL, which made the status long enough to wrap the
+// footer onto a line the layout never counted.
+func TestFooterNeverWrapsOnALongCopiedURL(t *testing.T) {
+	m := newTestModel(t, fakeSearcher{})
+	m.width = 60
+	next, _ := m.Update(copiedMsg{value: "https://example.atlassian.net/browse/ABC-1"})
+	m = next.(Model)
+
+	footer := plain(renderFooter(m))
+	if strings.Contains(footer, "\n") {
+		t.Errorf("footer wrapped:\n%s", footer)
+	}
+	if got := runewidth.StringWidth(footer); got > 60 {
+		t.Errorf("footer width = %d, want <= 60:\n%s", got, footer)
+	}
 }

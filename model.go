@@ -455,7 +455,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.err.Error()
 			return m, nil
 		}
-		m.status = "copied " + msg.value
+		m.status = "[" + msg.value + "] copied!"
 		return m, nil
 
 	case commandRanMsg:
