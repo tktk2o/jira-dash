@@ -455,7 +455,10 @@ func renderFooter(m Model) string {
 	if m.status != "" {
 		state += " · " + m.status
 	}
-	return st.footer.Render(fmt.Sprintf("%s · %d issues · r:refresh ?:help", state, len(s.visible())))
+	// Truncated to the terminal: Y copies a full issue URL into the status, and a
+	// footer that wraps is a second line the layout never budgeted for.
+	line := fmt.Sprintf("%s · %d issues · r:refresh ?:help", state, len(s.visible()))
+	return st.footer.Render(Truncate(line, max(0, m.width)))
 }
 
 // View draws the whole frame from the model alone, top to bottom: the tabs, the
