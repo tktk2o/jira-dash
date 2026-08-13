@@ -290,6 +290,83 @@ func TestActiveSprintErrorsWhenProjectHasNoBoard(t *testing.T) {
 	}
 }
 
+// A kanban board's GET /board/{id}/sprint answers 400 (Jira: "this board
+// does not support sprints"), not because anything is broken but because the
+// concept doesn't apply to kanban boards. When such a board is listed before
+// the scrum board that actually holds the active sprint - exactly the
+// real-site layout that surfaced this bug - ActiveSprint must skip the 400
+// and keep walking, not abort the whole resolution.
+func TestActiveSprintSkipsABoardThatDoesNotSupportSprints(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"id":177},{"id":189}],"isLast":true}`))
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/177/sprint", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errorMessages":["このボードはスプリントをサポートしません。"]}`))
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/189/sprint", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"id":3,"name":"Team 0803-0807","state":"active"}],"isLast":true}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	got, err := c.ActiveSprint(context.Background(), "PROJ", "Team")
+	if err != nil {
+		t.Fatalf("want the scrum board's active sprint despite the kanban board's 400, got error: %v", err)
+	}
+	if got.ID != 3 {
+		t.Errorf("got = %+v, want the active sprint on the second (scrum) board (id 3)", got)
+	}
+}
+
+// If every board on a project is kanban, ActiveSprint must fall through to
+// its normal "no active or future sprint" error rather than surfacing the
+// raw 400 from whichever board happened to be listed last.
+func TestActiveSprintErrorsWhenAllBoardsDoNotSupportSprints(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"id":177},{"id":209}],"isLast":true}`))
+	})
+	badRequest := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errorMessages":["このボードはスプリントをサポートしません。"]}`))
+	}
+	mux.HandleFunc("/rest/agile/1.0/board/177/sprint", badRequest)
+	mux.HandleFunc("/rest/agile/1.0/board/209/sprint", badRequest)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, err := c.ActiveSprint(context.Background(), "PROJ", "Team")
+	if err == nil || !strings.Contains(err.Error(), "no active or future sprint") {
+		t.Fatalf("want the usual 'no active or future sprint' error, got %v", err)
+	}
+}
+
+// A real failure - here a 401, standing in for anything that isn't "this
+// board doesn't support sprints" - must still abort ActiveSprint. The fix
+// for kanban boards must not become a blanket "ignore sprint-listing errors".
+func TestActiveSprintAbortsOnARealSprintListingFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[{"id":7}],"isLast":true}`))
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/7/sprint", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errorMessages":["You do not have permission"]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, err := c.ActiveSprint(context.Background(), "PROJ", "Team")
+	if err == nil {
+		t.Fatal("want an error, a 401 on the sprint listing must abort, not be swallowed")
+	}
+}
+
 // Create must send the issue's description as ADF, matching AddComment's
 // own reasoning (comment.go): Jira stores a Markdown string literally,
 // asterisks and all, rather than rendering it.
