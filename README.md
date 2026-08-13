@@ -367,6 +367,22 @@ list is not necessarily the current sprint.
 The box doesn't open on a tab with no rows (there's no project to inherit from). An
 empty title is rejected without being submitted.
 
+Add `parent: true` to make the key create a **subtask of the row under the cursor**
+instead of a sibling issue:
+
+```yaml
+create:
+  - key: s
+    type: サブタスク # must be a subtask type in this project
+    parent: true
+```
+
+`type` must name a subtask type in that project (config has no way to check this
+against Jira, so a mismatch surfaces as Jira's own rejection when you submit, not at
+startup). The sprint is **not** set on a `parent: true` create: a subtask inherits its
+parent's sprint, and setting one explicitly is rejected on many Jira configurations.
+The project still comes from the row, as it does for every other create key.
+
 The input field is one line for `create` (`jira create -s` takes a single string
 argument), three lines for `prompt: true` keys. The box's height is **subtracted from
 the table**, not appended below the screen — so the footer never gets pushed off

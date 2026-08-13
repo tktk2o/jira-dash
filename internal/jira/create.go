@@ -19,6 +19,10 @@ type NewIssue struct {
 	Summary     string
 	Description string
 	Sprint      string
+	// Parent makes this issue a subtask of the named key. Sent as the
+	// "parent" field the same way edit.go's Parent does, since the create
+	// and edit endpoints take the same shape for it.
+	Parent string
 }
 
 // rawProjectRef is the shape POST /issue expects to identify the project: a
@@ -53,6 +57,9 @@ func (c *Client) Create(ctx context.Context, n NewIssue) (Issue, error) {
 	if n.Description != "" {
 		doc := markdownToADF(n.Description)
 		fields["description"] = doc
+	}
+	if n.Parent != "" {
+		fields["parent"] = rawIssueRef{Key: n.Parent}
 	}
 
 	if n.Sprint != "" {

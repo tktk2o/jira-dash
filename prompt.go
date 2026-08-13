@@ -300,13 +300,14 @@ func AskPrompt(i Issue, body, instruction string) string {
 	return strings.Join(append(parts, "---", instruction), "\n\n")
 }
 
-func (m Model) openCreatePrompt(issueType string) (tea.Model, tea.Cmd) {
+func (m Model) openCreatePrompt(ck CreateKey) (tea.Model, tea.Cmd) {
 	if _, ok := m.sections[m.active].selected(); !ok {
 		m.status = "nothing to create from: this section has no rows"
 		return m, nil
 	}
 	m.creating = true
-	m.createType = issueType
+	m.createType = ck.Type
+	m.createParent = ck.Parent
 	m.openPrompt(createInputHeight)
 	return m, nil
 }
@@ -335,7 +336,13 @@ func (m Model) handleCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Type:    m.createType,
 			Summary: summary,
 		}
-		if sprint, ok := row.CurrentSprint(); ok {
+		if m.createParent {
+			req.Parent = row.Key
+			// Deliberately no Sprint here: a subtask inherits its parent's
+			// sprint, and many Jira configurations reject an explicit sprint
+			// on a subtask create outright. Setting it would either be
+			// ignored or fail the whole create depending on the site.
+		} else if sprint, ok := row.CurrentSprint(); ok {
 			req.Sprint = sprint.Name
 		}
 
@@ -361,7 +368,7 @@ func (m Model) updatePrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // closePrompt is a method rather than the same three assignments at each exit.
 func (m *Model) closePrompt() {
-	m.creating, m.asking, m.askKey = false, false, ""
+	m.creating, m.createParent, m.asking, m.askKey = false, false, false, ""
 	m.prompt.Reset()
 	m.prompt.Blur()
 }

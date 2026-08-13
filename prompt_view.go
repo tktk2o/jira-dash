@@ -13,12 +13,16 @@ import (
 // because the project and sprint are inherited rather than typed: without them
 // on screen there is nothing to check against before pressing enter.
 func createPromptTitle(m Model) string {
-	target := ""
-	if row, ok := m.sections[m.active].selected(); ok {
-		target = row.Project.Key
-		if sprint, ok := row.CurrentSprint(); ok {
-			target += " / " + sprint.Name
-		}
+	row, ok := m.sections[m.active].selected()
+	if !ok {
+		return fmt.Sprintf("new %s…", m.createType)
+	}
+	if m.createParent {
+		return fmt.Sprintf("new %s under %s…", m.createType, row.Key)
+	}
+	target := row.Project.Key
+	if sprint, ok := row.CurrentSprint(); ok {
+		target += " / " + sprint.Name
 	}
 	return fmt.Sprintf("new %s in %s…", m.createType, target)
 }

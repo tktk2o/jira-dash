@@ -45,6 +45,12 @@ type Config struct {
 type CreateKey struct {
 	Key  string `yaml:"key"`
 	Type string `yaml:"type"`
+	// Parent makes the new issue a child of the row under the cursor instead
+	// of a sibling of it: Type must then name a subtask type in that
+	// project (e.g. "サブタスク") - config has no way to check that against
+	// Jira, so a non-subtask type here surfaces as Jira's own rejection at
+	// create time, not as a load-time error. Defaults to false.
+	Parent bool `yaml:"parent"`
 }
 
 // Section is one tab. The JQL owns what the tab is; everything else here trims

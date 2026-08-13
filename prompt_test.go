@@ -51,7 +51,11 @@ func TestEscapeClearsFilter(t *testing.T) {
 func createTestModel(t *testing.T, recorded *[]NewIssueRequest) Model {
 	t.Helper()
 	cfg := testConfig()
-	cfg.Create = []CreateKey{{Key: "c", Type: "Task"}, {Key: "C", Type: "Story"}}
+	cfg.Create = []CreateKey{
+		{Key: "c", Type: "Task"},
+		{Key: "C", Type: "Story"},
+		{Key: "s", Type: "サブタスク", Parent: true},
+	}
 	m := NewModel(cfg, fakeSearcher{created: recorded}, NewCache(t.TempDir()), fixedNow())
 	m.width, m.height = 200, 40
 
@@ -111,6 +115,64 @@ func TestCreateKeyChoosesTheIssueType(t *testing.T) {
 
 	if len(got) != 1 || got[0].Type != "Story" {
 		t.Fatalf("request = %+v, want type Story", got)
+	}
+}
+
+// parent: true sends the row under the cursor as the new issue's parent, and
+// deliberately leaves Sprint empty: a subtask inherits its parent's sprint,
+// and setting it explicitly is rejected on many Jira configurations.
+func TestCreateWithParentSetsParentAndOmitsSprint(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+
+	m = press(m, "s")
+	if !m.creating {
+		t.Fatal("s should open the create prompt")
+	}
+	for _, r := range "child thing" {
+		m = press(m, string(r))
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("ctrl+d should submit")
+	}
+	cmd()
+
+	if len(got) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(got))
+	}
+	want := NewIssueRequest{Project: "ABC", Type: "サブタスク", Summary: "child thing", Parent: "ABC-1"}
+	if got[0] != want {
+		t.Errorf("request = %+v, want %+v", got[0], want)
+	}
+	if m.creating {
+		t.Error("the prompt should close on submit")
+	}
+}
+
+// Omitting parent (or parent: false) must keep today's behaviour exactly: no
+// Parent, and Sprint still inherited from the row's active sprint.
+func TestCreateWithoutParentKeepsSprintAndNoParent(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+
+	m = press(m, "c")
+	for _, r := range "new thing" {
+		m = press(m, string(r))
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	_ = next
+	cmd()
+
+	if len(got) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(got))
+	}
+	if got[0].Parent != "" {
+		t.Errorf("Parent = %q, want empty", got[0].Parent)
+	}
+	if got[0].Sprint != "Team 0803-0807" {
+		t.Errorf("Sprint = %q, want inherited from the row", got[0].Sprint)
 	}
 }
 

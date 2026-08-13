@@ -217,6 +217,52 @@ create:
 	}
 }
 
+// parent: true is read as-is, and defaults to false when omitted - config has
+// no way to check the type names a subtask type, so it only carries the flag.
+func TestLoadConfigReadsCreateParent(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+create:
+  - key: c
+    type: Task
+  - key: s
+    type: サブタスク
+    parent: true
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Create) != 2 {
+		t.Fatalf("create entries = %d, want 2", len(cfg.Create))
+	}
+	if cfg.Create[0].Parent {
+		t.Errorf("first entry Parent = true, want false (omitted)")
+	}
+	if !cfg.Create[1].Parent {
+		t.Errorf("second entry Parent = false, want true")
+	}
+}
+
+// An unknown key inside a create entry is a typo, not a feature request, and
+// KnownFields makes that a load error rather than a silently ignored field.
+func TestLoadConfigRejectsAnUnknownCreateEntryKey(t *testing.T) {
+	path := writeConfig(t, `
+jiraSections:
+  - title: Mine
+    jql: assignee = currentUser()
+create:
+  - key: c
+    type: Task
+    parnt: true
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("an unknown key inside a create entry should be rejected")
+	}
+}
+
 // A create key that shadows a navigation key would make the dashboard
 // unusable in a way that is hard to diagnose, so it is rejected at load.
 func TestLoadConfigRejectsACreateKeyThatShadowsNavigation(t *testing.T) {
