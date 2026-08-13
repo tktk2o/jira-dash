@@ -265,12 +265,32 @@ func sleepForRetry(ctx context.Context, base time.Duration, attempt int, lastErr
 	}
 }
 
+// httpStatusError carries the HTTP status code of a failed request through
+// to callers, alongside the human-readable message httpError already builds.
+// Without this, a caller that needs to branch on "was this specifically a
+// 400" (create.go's ActiveSprint, treating a kanban board's 400 on
+// /sprint as "no sprints" rather than a real failure) would have to parse
+// the status back out of the formatted error string. errors.As is how
+// callers recover it.
+type httpStatusError struct {
+	statusCode int
+	msg        string
+}
+
+func (e *httpStatusError) Error() string { return e.msg }
+
+// StatusCode is the HTTP status Jira responded with.
+func (e *httpStatusError) StatusCode() int { return e.statusCode }
+
 // httpError turns a non-2xx response into an error a person can act on. 401
 // and 403 both mean the token Jira was handed is no good, whether it expired
 // or was never valid, and the fix in either case is the same command.
 func httpError(status int, body []byte) error {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return fmt.Errorf("jira rejected the credentials (HTTP %d): run %q", status, "jira auth login")
+		return &httpStatusError{
+			statusCode: status,
+			msg:        fmt.Sprintf("jira rejected the credentials (HTTP %d): run %q", status, "jira auth login"),
+		}
 	}
 
 	var parsed jiraErrorBody
@@ -290,7 +310,9 @@ func httpError(status int, body []byte) error {
 		}
 	}
 	if msg == "" {
-		return fmt.Errorf("jira returned HTTP %d", status)
+		msg = fmt.Sprintf("jira returned HTTP %d", status)
+	} else {
+		msg = fmt.Sprintf("jira returned HTTP %d: %s", status, msg)
 	}
-	return fmt.Errorf("jira returned HTTP %d: %s", status, msg)
+	return &httpStatusError{statusCode: status, msg: msg}
 }

@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -130,6 +131,19 @@ func (c *Client) ActiveSprint(ctx context.Context, projectKey, prefix string) (S
 	for _, board := range boards {
 		sprints, err := c.listSprints(ctx, board.ID)
 		if err != nil {
+			// A kanban board doesn't support sprints at all - Jira answers
+			// GET /board/{id}/sprint with a 400 for one, not because
+			// anything is wrong, but because the concept doesn't apply.
+			// Boards are unordered from Jira's point of view, so a project
+			// mixing kanban and scrum boards can list the kanban one
+			// first; treating this as "zero sprints on this board" instead
+			// of aborting lets ActiveSprint keep walking to the scrum board
+			// that actually holds the sprint. Any other status (401, 500,
+			// a 400 about something else) still aborts as before.
+			var statusErr *httpStatusError
+			if errors.As(err, &statusErr) && statusErr.StatusCode() == http.StatusBadRequest {
+				continue
+			}
 			return Sprint{}, err
 		}
 		for _, s := range sprints {
