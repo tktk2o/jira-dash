@@ -63,6 +63,11 @@ type NewIssueRequest struct {
 	// route around it without extending internal/jira, which is a different
 	// task.
 	Sprint string
+	// Parent makes the new issue a subtask of this key instead of a
+	// top-level issue. When set, the create prompt leaves Sprint empty: a
+	// subtask inherits its parent's sprint, and Jira rejects setting one
+	// explicitly on many configurations.
+	Parent string
 }
 
 // commentsMax mirrors cmd/jira's own default (comment_cmd.go's
@@ -103,6 +108,7 @@ func (a Adapter) Create(ctx context.Context, req NewIssueRequest) (Issue, error)
 		Type:       req.Type,
 		Summary:    req.Summary,
 		Sprint:     req.Sprint,
+		Parent:     req.Parent,
 	})
 }
 

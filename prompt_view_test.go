@@ -30,6 +30,23 @@ func TestCreateBoxNamesItsTarget(t *testing.T) {
 	}
 }
 
+// A parent create's title names the row it will attach to, not a project and
+// sprint - the "in ABC / sprint" phrasing does not apply to a subtask, whose
+// project and sprint both come from the parent, not the row.
+func TestCreateBoxNamesTheParentWhenCreatingASubtask(t *testing.T) {
+	var got []NewIssueRequest
+	m := createTestModel(t, &got)
+	m = press(m, "s")
+
+	out := plain(m.View())
+	if !strings.Contains(out, "サブタスク") || !strings.Contains(out, "ABC-1") {
+		t.Errorf("the box should name the parent row: %q", out)
+	}
+	if !strings.Contains(out, "under") {
+		t.Errorf("the box should say it is creating a child: %q", out)
+	}
+}
+
 // The box is framed like gh-dash's approve comment, and takes its height out of
 // the table rather than off the bottom of the terminal.
 func TestCreateBoxIsFramedAndFitsTheScreen(t *testing.T) {

@@ -154,6 +154,10 @@ type Model struct {
 	// and sprint from the row the cursor was on.
 	creating   bool
 	createType string
+	// createParent marks a create started by a config.create entry with
+	// parent: true - the new issue's parent is the row under the cursor
+	// instead of the row being where the new issue merely lands beside.
+	createParent bool
 
 	// The ask prompt collects an instruction to hand a configured command, which
 	// in practice means handing it to Claude. askKey is which keybinding opened
@@ -659,7 +663,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// has already refused any create key that collides with the cases above.
 	for _, ck := range m.cfg.Create {
 		if ck.Key == msg.String() {
-			return m.openCreatePrompt(ck.Type)
+			return m.openCreatePrompt(ck)
 		}
 	}
 

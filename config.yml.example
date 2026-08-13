@@ -105,6 +105,19 @@ defaults:
 #       type: Task
 #     - key: C
 #       type: Story
+#
+# parent: true makes the key create a subtask of the row under the cursor
+# instead of a sibling issue. type must then name a subtask type in that
+# project (e.g. サブタスク on a Japanese site) - config cannot check this
+# against Jira, so a mismatch shows up as Jira's own rejection, not a
+# startup error. The sprint is not set on a parent: true create: a subtask
+# inherits its parent's sprint, and setting one explicitly is rejected on
+# many Jira configurations.
+#
+#   create:
+#     - key: s
+#       type: サブタスク
+#       parent: true
 
 # Every {{...}} value is substituted already shell-quoted, because a Jira
 # title is free text and this command is run through `sh -c`. Do NOT add your
