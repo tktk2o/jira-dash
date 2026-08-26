@@ -102,6 +102,24 @@ func TestAddCommentSendsBodyAsADFNotMarkdown(t *testing.T) {
 	}
 }
 
+// A mark that takes no attrs must be encoded without an "attrs" key at all.
+// Jira rejects the whole request with HTTP 400 INVALID_INPUT when it sees
+// "attrs":null on a mark, so this is the difference between a body it stores
+// and a body it refuses - not a cosmetic one.
+func TestMarkdownToADFEncodesMarksWithoutANullAttrs(t *testing.T) {
+	encoded, err := json.Marshal(markdownToADF("**bold** and `code` and [text](https://example.com)"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"attrs":null`) {
+		t.Errorf("encoded body carries a null attrs: %s", encoded)
+	}
+	// The one mark that does take attrs must keep them.
+	if !strings.Contains(string(encoded), `"href":"https://example.com"`) {
+		t.Errorf("link mark lost its href: %s", encoded)
+	}
+}
+
 // EditComment must PUT to the comment's own URL, not POST to the issue's
 // comment collection - the latter would silently add a second comment
 // instead of replacing the one asked for.
