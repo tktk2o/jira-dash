@@ -20,6 +20,7 @@ type jiraClient interface {
 	Search(ctx context.Context, jql string, limit int) ([]jirapkg.Issue, error)
 	Comments(ctx context.Context, key string, max int) ([]jirapkg.Comment, error)
 	AddComment(ctx context.Context, key, bodyMarkdown string) (jirapkg.Comment, error)
+	EditComment(ctx context.Context, key, commentID, bodyMarkdown string) (jirapkg.Comment, error)
 	Create(ctx context.Context, n jirapkg.NewIssue) (jirapkg.Issue, error)
 	Edit(ctx context.Context, key string, e jirapkg.Edit) error
 	Transitions(ctx context.Context, key string) ([]jirapkg.Transition, error)

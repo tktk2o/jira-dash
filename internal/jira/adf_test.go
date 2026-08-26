@@ -81,6 +81,48 @@ func TestRenderADFToMarkdownRendersBulletList(t *testing.T) {
 	}
 }
 
+// A top-level list must be followed by a blank line, like every other block.
+// Without it the next block is glued to the last bullet, and re-reading that
+// Markdown folds the two into one list - so the separator is what keeps the
+// rendering idempotent, not just prettier.
+func TestRenderADFToMarkdownSeparatesTopLevelListFromTheNextBlock(t *testing.T) {
+	doc := `{"type":"doc","content":[
+		{"type":"bulletList","content":[
+			{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"bullet"}]}]}
+		]},
+		{"type":"orderedList","content":[
+			{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"numbered"}]}]}
+		]}
+	]}`
+	got, err := renderADFToMarkdown([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "- bullet\n\n1. numbered"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A nested list must not gain that blank line - it belongs to its parent
+// item, and a gap there would break the item apart when read back.
+func TestRenderADFToMarkdownKeepsNestedListAttachedToItsItem(t *testing.T) {
+	doc := `{"type":"doc","content":[{"type":"bulletList","content":[
+		{"type":"listItem","content":[
+			{"type":"paragraph","content":[{"type":"text","text":"parent"}]},
+			{"type":"bulletList","content":[
+				{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"child"}]}]}
+			]}
+		]}
+	]}]}`
+	got, err := renderADFToMarkdown([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "- parent\n  - child"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // orderedList numbers items 1., 2., ... regardless of any attrs.order Jira
 // might send, since renumbering from the doc order is what every Markdown
 // renderer does with a mismatched start anyway.

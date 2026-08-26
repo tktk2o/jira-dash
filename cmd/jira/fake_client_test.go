@@ -21,6 +21,8 @@ type fakeClient struct {
 	commentsErr     error
 	addedComment    jirapkg.Comment
 	addCommentErr   error
+	editedComment   jirapkg.Comment
+	editCommentErr  error
 	createdIssue    jirapkg.Issue
 	createErr       error
 	editErr         error
@@ -40,10 +42,15 @@ type fakeClient struct {
 	lastSearchLimit   int
 	lastAddCommentKey string
 	lastAddCommentMD  string
-	lastCreateInput   jirapkg.NewIssue
-	lastEditKey       string
-	lastEditInput     jirapkg.Edit
-	lastTransitionTo  string
+
+	lastEditCommentKey string
+	lastEditCommentID  string
+	lastEditCommentMD  string
+
+	lastCreateInput  jirapkg.NewIssue
+	lastEditKey      string
+	lastEditInput    jirapkg.Edit
+	lastTransitionTo string
 
 	lastJQLFieldName  string
 	lastJQLFieldValue string
@@ -74,6 +81,14 @@ func (f *fakeClient) AddComment(ctx context.Context, key, bodyMarkdown string) (
 	f.calls = append(f.calls, "AddComment")
 	f.lastAddCommentKey, f.lastAddCommentMD = key, bodyMarkdown
 	return f.addedComment, f.addCommentErr
+}
+
+func (f *fakeClient) EditComment(
+	ctx context.Context, key, commentID, bodyMarkdown string,
+) (jirapkg.Comment, error) {
+	f.calls = append(f.calls, "EditComment")
+	f.lastEditCommentKey, f.lastEditCommentID, f.lastEditCommentMD = key, commentID, bodyMarkdown
+	return f.editedComment, f.editCommentErr
 }
 
 func (f *fakeClient) Create(ctx context.Context, n jirapkg.NewIssue) (jirapkg.Issue, error) {

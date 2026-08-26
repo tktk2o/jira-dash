@@ -33,6 +33,7 @@ var usageLines = []string{
 	"  create                 create an issue",
 	"  edit <key>             edit an issue's fields, or transition its status",
 	"  comment add <key>      add a comment",
+	"  comment edit <key> <comment-id> replace a comment's body",
 	"  comment list <key>     list an issue's comments",
 	"  transitions <key>      list the statuses an issue can move to",
 	"  users assignable <key> list users who can be assigned an issue",
