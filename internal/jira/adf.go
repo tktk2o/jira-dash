@@ -18,9 +18,13 @@ type adfNode struct {
 	Attrs   map[string]any `json:"attrs"`
 }
 
+// adfMark is shared by both directions. omitempty on Attrs is there for the
+// write side: Jira answers HTTP 400 INVALID_INPUT to a mark carrying
+// "attrs":null, which is what an absent map encodes to otherwise. Decoding is
+// unaffected - omitempty only applies when marshalling.
 type adfMark struct {
 	Type  string         `json:"type"`
-	Attrs map[string]any `json:"attrs"`
+	Attrs map[string]any `json:"attrs,omitempty"`
 }
 
 // renderADFToMarkdown converts one Jira description/comment body (ADF, as
