@@ -76,6 +76,13 @@ func TestRunWithNoArgumentsPrintsUsage(t *testing.T) {
 			t.Errorf("stderr does not list subcommand %q: %q", name, stderr.String())
 		}
 	}
+	// A two-word subcommand is only discoverable from this list, so each one
+	// has to appear in full rather than relying on its first word.
+	for _, name := range []string{"comment add", "comment edit", "comment list"} {
+		if !strings.Contains(stderr.String(), name) {
+			t.Errorf("stderr does not list subcommand %q: %q", name, stderr.String())
+		}
+	}
 }
 
 // --version and -v must both work, and without ever calling newClient - the

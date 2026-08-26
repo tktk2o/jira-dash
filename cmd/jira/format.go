@@ -206,6 +206,14 @@ func writeCommentAddOutput(w io.Writer, format outputFormat, c jirapkg.Comment) 
 	return nil
 }
 
+func writeCommentEditOutput(w io.Writer, format outputFormat, c jirapkg.Comment) error {
+	if format == formatJSON {
+		return writeJSON(w, c)
+	}
+	_, _ = fmt.Fprintf(w, "Comment %s updated\n", c.ID)
+	return nil
+}
+
 func writeCreateOutput(w io.Writer, format outputFormat, issue jirapkg.Issue) error {
 	if format == formatJSON {
 		return writeJSON(w, issue)

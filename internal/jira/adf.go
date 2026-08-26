@@ -65,8 +65,10 @@ func renderADFNode(b *strings.Builder, n adfNode, indent string) {
 		b.WriteString("\n\n")
 	case "bulletList":
 		renderADFList(b, n.Content, indent, "- ")
+		endTopLevelList(b, indent)
 	case "orderedList":
 		renderADFOrderedList(b, n.Content, indent)
+		endTopLevelList(b, indent)
 	case "listItem":
 		// Reached only when a list item's own children include a nested list
 		// with no bullet/number prefix of its own to reuse; renderADFList and
@@ -107,6 +109,16 @@ func renderADFNode(b *strings.Builder, n adfNode, indent string) {
 		// dropping it silently would read as a truncated description rather
 		// than an unsupported one.
 		writeInline(b, n.Content)
+	}
+}
+
+// endTopLevelList closes a list with the blank line every other block ends
+// with, but only at the margin: a nested list is part of the item above it,
+// so a gap there would split that item in two when the Markdown is read
+// back.
+func endTopLevelList(b *strings.Builder, indent string) {
+	if indent == "" {
+		b.WriteString("\n")
 	}
 }
 
